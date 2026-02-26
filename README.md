@@ -2,6 +2,8 @@
 
 A lightweight TUI for saving and running HTTP requests, sitting between curl and Postman.
 
+![img.png](img.png)
+
 ## Features
 - List, create, duplicate, edit, delete and execute HTTP requests
 - JSON storage in `.curlish.json` (portable, human-readable)
