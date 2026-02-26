@@ -99,7 +99,7 @@ impl App {
         })
     }
 
-    // â”€â”€ Key dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Key dispatch
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<AppAction> {
         match &self.mode.clone() {
@@ -185,7 +185,7 @@ impl App {
         Ok(AppAction::Continue)
     }
 
-    // â”€â”€ Inline text edit (Name, URL) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Inline text edit (Name, URL)
 
     fn handle_inline_edit(&mut self, field: EditField, key: KeyEvent) -> Result<AppAction> {
         match key.code {
@@ -205,7 +205,7 @@ impl App {
         Ok(AppAction::Continue)
     }
 
-    // â”€â”€ Method picker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Method picker
 
     fn handle_method_picker(&mut self, key: KeyEvent) -> Result<AppAction> {
         let Mode::MethodPicker { ref mut filter, ref mut selected } = self.mode else {
@@ -256,8 +256,7 @@ impl App {
             .collect()
     }
 
-    // â”€â”€ Header list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
+    // Header list
     fn handle_header_list(&mut self, key: KeyEvent) -> Result<AppAction> {
         let header_count = self.current_request().map_or(0, |r| r.headers.len());
         let Mode::HeaderList { ref mut selected } = self.mode else {
@@ -317,7 +316,7 @@ impl App {
         Ok(AppAction::Continue)
     }
 
-    // â”€â”€ Header inline edit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Header inline edit
 
     fn handle_header_edit(&mut self, key: KeyEvent) -> Result<AppAction> {
         let Mode::HeaderEdit { index, editing_value, autocomplete_idx } = self.mode else {
