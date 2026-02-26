@@ -10,20 +10,35 @@ const STYLE_SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier
 const STYLE_STATUS: Style = Style::new().fg(Color::Yellow);
 const STYLE_RESPONSE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 const STYLE_FOCUSED_BORDER: Style = Style::new().fg(Color::Cyan);
-const KEY_HELP: &str = "WASD: areas  \u{2191}\u{2193}: navigate  E: edit  R: run  Ctrl+S: save  N: new  X: del  Q: quit";
+const KEY_HELP: &str = "WASD: areas  \u{2191}\u{2193}: navigate  E: edit  R: run  Ctrl+S: save  N: new  C: copy  X: del  Q: quit";
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(frame.size());
+
+    let main_area = outer[0];
+    let status_area = outer[1];
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(frame.size());
+        .split(main_area);
 
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(chunks[0]);
 
-    draw_request_list(frame, app, top_chunks[0]);
+    // Split the left column: environment selector (small) + request list
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(top_chunks[0]);
+
+    draw_environment(frame, app, left_chunks[0]);
+    draw_request_list(frame, app, left_chunks[1]);
     draw_details(frame, app, top_chunks[1]);
     draw_response(frame, app, chunks[1]);
 
@@ -35,16 +50,31 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         Mode::HeaderList { selected } => {
             draw_header_list(frame, app, *selected);
         }
-        Mode::HeaderEdit { index, editing_value } => {
-            draw_header_edit(frame, app, *index, *editing_value);
+        Mode::HeaderEdit { index, editing_value, autocomplete_idx } => {
+            draw_header_edit(frame, app, *index, *editing_value, *autocomplete_idx);
         }
         Mode::BodyEditor { lines, cursor_row, cursor_col } => {
             draw_body_editor(frame, lines, *cursor_row, *cursor_col);
         }
+        Mode::ConfirmDelete { selected } => {
+            draw_confirm_delete(frame, app, *selected);
+        }
+        Mode::ConfirmQuit { selected } => {
+            draw_confirm_quit(frame, *selected);
+        }
+        Mode::EnvEditor { selected } => {
+            draw_env_editor(frame, app, *selected);
+        }
+        Mode::EnvVarEdit { index, editing_value } => {
+            draw_env_var_edit(frame, app, *index, *editing_value);
+        }
+        Mode::EnvNameEdit => {
+            draw_env_name_edit(frame, app);
+        }
         _ => {}
     }
 
-    draw_status(frame, app);
+    draw_status(frame, app, status_area);
 }
 
 fn area_block(title: &str, focused: bool) -> Block<'_> {
@@ -54,6 +84,18 @@ fn area_block(title: &str, focused: bool) -> Block<'_> {
     } else {
         block
     }
+}
+
+fn draw_environment(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let focused = app.focused_area == UiArea::Environment;
+    let env_name = app.active_env_name();
+    let block = area_block("Env", focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let style = if focused { STYLE_SELECTED } else { Style::default() };
+    let text = Line::from(Span::styled(format!(" {env_name}"), style));
+    frame.render_widget(Paragraph::new(text), inner);
 }
 
 fn draw_request_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -81,13 +123,16 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     let lines = if let Some(req) = app.current_request() {
         let current = app.current_field();
+        let name_display = if req.name.is_empty() { "(unnamed)" } else { &req.name };
+        let url_display = if req.url.is_empty() { "(no url)" } else { &req.url };
+        let headers_display = format_headers(&req.headers);
         let body_display = if req.body.is_empty() { "(empty)" } else { &req.body };
 
         vec![
-            field_line("Name", &req.name, current == EditField::Name),
+            field_line("Name", name_display, current == EditField::Name),
             field_line("Method", &req.method.to_string(), current == EditField::Method),
-            field_line("URL", &req.url, current == EditField::Url),
-            field_line("Headers", &format_headers(&req.headers), current == EditField::Headers),
+            field_line("URL", url_display, current == EditField::Url),
+            field_line("Headers", &headers_display, current == EditField::Headers),
             field_line("Body", body_display, current == EditField::Body),
         ]
     } else {
@@ -133,17 +178,9 @@ fn draw_response(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-fn draw_status(frame: &mut Frame<'_>, app: &App) {
-    let area = frame.size();
-    let bar = Rect {
-        x: area.x,
-        y: area.y + area.height.saturating_sub(1),
-        width: area.width,
-        height: 1,
-    };
-
+fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let text = match &app.mode {
-        Mode::Normal => format!("[{}] | {KEY_HELP} | {}", app.focused_area.label(), app.status_line),
+        Mode::Normal => format!("{KEY_HELP} | {}", app.status_line),
         Mode::Editing(field) => {
             let value = if app.input.is_empty() { "(type and Enter)" } else { &app.input };
             format!("EDIT {field:?}: {value}")
@@ -157,16 +194,32 @@ fn draw_status(frame: &mut Frame<'_>, app: &App) {
         }
         Mode::HeaderEdit { editing_value, .. } => {
             let part = if *editing_value { "value" } else { "name" };
-            format!("HEADER {part}: {} | Tab/Enter: next  Esc: cancel", app.input)
+            format!("HEADER {part}: {} | Tab/\u{2191}\u{2193}: autocomplete  Enter: confirm  Esc: cancel", app.input)
         }
         Mode::BodyEditor { .. } => {
-            String::from("BODY | type freely  Esc/Ctrl+S: save & exit")
+            String::from("BODY | type freely  Ctrl+P: prettify JSON  Esc/Ctrl+S: save & exit")
+        }
+        Mode::ConfirmDelete { .. } => {
+            String::from("\u{2191}\u{2193}: select  Enter: confirm  Esc: cancel")
+        }
+        Mode::ConfirmQuit { .. } => {
+            String::from("\u{2191}\u{2193}: select  Enter: confirm  Esc: cancel")
+        }
+        Mode::EnvEditor { .. } => {
+            String::from("ENV | \u{2191}\u{2193}: select  N: add var  X: del  E/Enter: edit  R: rename  Esc: done")
+        }
+        Mode::EnvVarEdit { editing_value, .. } => {
+            let part = if *editing_value { "value" } else { "key" };
+            format!("ENV VAR {part}: {} | Tab/Enter: next  Esc: cancel", app.input)
+        }
+        Mode::EnvNameEdit => {
+            format!("ENV NAME: {} | Enter: confirm  Esc: cancel", app.input)
         }
     };
 
     frame.render_widget(
-        Paragraph::new(text).style(STYLE_STATUS).wrap(Wrap { trim: true }),
-        bar,
+        Paragraph::new(format!(" {text}")).style(STYLE_STATUS),
+        area,
     );
 }
 
@@ -257,12 +310,17 @@ fn draw_header_list(frame: &mut Frame<'_>, app: &App, selected: usize) {
     frame.render_widget(list, area);
 }
 
-fn draw_header_edit(frame: &mut Frame<'_>, app: &App, index: usize, editing_value: bool) {
-    let area = centered_rect(60, 20, frame.size());
+fn draw_header_edit(frame: &mut Frame<'_>, app: &App, index: usize, editing_value: bool, autocomplete_idx: Option<usize>) {
+    let suggestions = app.current_suggestions(editing_value, index);
+    let suggestion_count = suggestions.len();
+    // Size the popup taller if there are suggestions to show
+    let height_pct = if suggestion_count > 0 { 50 } else { 20 };
+
+    let area = centered_rect(60, height_pct, frame.size());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(format!("Edit Header #{}", index + 1))
+        .title(format!("Edit Header #{} | Tab/\u{2191}\u{2193}: autocomplete  Enter: confirm", index + 1))
         .borders(Borders::ALL)
         .border_style(STYLE_FOCUSED_BORDER);
     let inner = block.inner(area);
@@ -280,7 +338,7 @@ fn draw_header_edit(frame: &mut Frame<'_>, app: &App, index: usize, editing_valu
     let display_name = if !editing_value { &app.input } else { name };
     let display_value = if editing_value { &app.input } else { value };
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled("Name:  ", name_style),
             Span::raw(display_name.to_string()),
@@ -290,6 +348,22 @@ fn draw_header_edit(frame: &mut Frame<'_>, app: &App, index: usize, editing_valu
             Span::raw(display_value.to_string()),
         ]),
     ];
+
+    if suggestion_count > 0 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "\u{2500}\u{2500} suggestions \u{2500}\u{2500}",
+            Style::default().fg(Color::DarkGray),
+        )));
+        for (i, s) in suggestions.iter().enumerate() {
+            let style = if autocomplete_idx == Some(i) {
+                STYLE_SELECTED
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            lines.push(Line::from(Span::styled(format!("  {s}"), style)));
+        }
+    }
 
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
@@ -340,3 +414,140 @@ fn draw_body_editor(frame: &mut Frame<'_>, lines: &[String], cursor_row: usize, 
     );
 }
 
+fn draw_confirm_delete(frame: &mut Frame<'_>, app: &App, selected: usize) {
+    let area = centered_rect(30, 20, frame.size());
+    frame.render_widget(Clear, area);
+
+    let name = app.current_request().map_or("?", |r| r.name.as_str());
+    let options = ["Yes", "No"];
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let style = if i == selected { STYLE_SELECTED } else { Style::default() };
+            ListItem::new(format!("  {label}")).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(format!("Delete \"{name}\"?"))
+            .borders(Borders::ALL)
+            .border_style(STYLE_FOCUSED_BORDER),
+    );
+    frame.render_widget(list, area);
+}
+
+fn draw_confirm_quit(frame: &mut Frame<'_>, selected: usize) {
+    let area = centered_rect(30, 20, frame.size());
+    frame.render_widget(Clear, area);
+
+    let options = ["Quit", "Cancel"];
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let style = if i == selected { STYLE_SELECTED } else { Style::default() };
+            ListItem::new(format!("  {label}")).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title("Unsaved changes!")
+            .borders(Borders::ALL)
+            .border_style(STYLE_FOCUSED_BORDER),
+    );
+    frame.render_widget(list, area);
+}
+
+fn draw_env_editor(frame: &mut Frame<'_>, app: &App, selected: usize) {
+    let area = centered_rect(60, 50, frame.size());
+    frame.render_widget(Clear, area);
+
+    let env_name = app.active_env_name();
+    let items: Vec<ListItem> = app
+        .store
+        .active_environment
+        .and_then(|i| app.store.environments.get(i))
+        .map(|env| {
+            env.variables
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let style = if i == selected { STYLE_SELECTED } else { Style::default() };
+                    let key_display = if v.key.is_empty() { "(key)" } else { &v.key };
+                    let val_display = if v.value.is_empty() { "(value)" } else { &v.value };
+                    ListItem::new(format!("  {key_display} = {val_display}")).style(style)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let count = items.len();
+    let list = List::new(items).block(
+        Block::default()
+            .title(format!("{env_name} ({count} vars) | N:add X:del E:edit R:rename"))
+            .borders(Borders::ALL)
+            .border_style(STYLE_FOCUSED_BORDER),
+    );
+    frame.render_widget(list, area);
+}
+
+fn draw_env_var_edit(frame: &mut Frame<'_>, app: &App, index: usize, editing_value: bool) {
+    let area = centered_rect(60, 20, frame.size());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!("Edit Variable #{}", index + 1))
+        .borders(Borders::ALL)
+        .border_style(STYLE_FOCUSED_BORDER);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let (key, value) = app
+        .store
+        .active_environment
+        .and_then(|i| app.store.environments.get(i))
+        .and_then(|e| e.variables.get(index))
+        .map(|v| (v.key.as_str(), v.value.as_str()))
+        .unwrap_or(("", ""));
+
+    let key_style = if !editing_value { STYLE_SELECTED } else { Style::default() };
+    let val_style = if editing_value { STYLE_SELECTED } else { Style::default() };
+
+    let display_key = if !editing_value { &app.input } else { key };
+    let display_value = if editing_value { &app.input } else { value };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Key:   ", key_style),
+            Span::raw(display_key.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Value: ", val_style),
+            Span::raw(display_value.to_string()),
+        ]),
+    ];
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn draw_env_name_edit(frame: &mut Frame<'_>, app: &App) {
+    let area = centered_rect(40, 15, frame.size());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title("Rename Environment")
+        .borders(Borders::ALL)
+        .border_style(STYLE_FOCUSED_BORDER);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![Line::from(vec![
+        Span::styled("Name: ", STYLE_SELECTED),
+        Span::raw(app.input.to_string()),
+    ])];
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}

@@ -2,20 +2,22 @@
 use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiArea {
+    Environment,
     RequestList,
     Details,
     Response,
 }
 impl UiArea {
-    /// Move right in the layout (Requests -> Details)
+    /// Move right in the layout
     pub fn right(self) -> Self {
         match self {
+            UiArea::Environment => UiArea::Details,
             UiArea::RequestList => UiArea::Details,
             other => other,
         }
     }
 
-    /// Move left in the layout (Details -> Requests)
+    /// Move left in the layout
     pub fn left(self) -> Self {
         match self {
             UiArea::Details => UiArea::RequestList,
@@ -23,38 +25,83 @@ impl UiArea {
         }
     }
 
-    /// Move down in the layout (top row -> Response)
+    /// Move down in the layout
     pub fn down(self) -> Self {
         match self {
+            UiArea::Environment => UiArea::RequestList,
             UiArea::RequestList | UiArea::Details => UiArea::Response,
             other => other,
         }
     }
 
-    /// Move up in the layout (Response -> RequestList)
+    /// Move up in the layout
     pub fn up(self) -> Self {
         match self {
             UiArea::Response => UiArea::RequestList,
+            UiArea::RequestList => UiArea::Environment,
             other => other,
         }
     }
 
+    #[cfg(test)]
     pub fn label(self) -> &'static str {
         match self {
+            UiArea::Environment => "Environment",
             UiArea::RequestList => "Requests",
             UiArea::Details => "Details",
             UiArea::Response => "Response",
         }
     }
 }
+// ── Environment ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Environment {
+    pub name: String,
+    pub variables: Vec<EnvVariable>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvVariable {
+    pub key: String,
+    pub value: String,
+}
+
+impl Environment {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: String::from(name),
+            variables: Vec::new(),
+        }
+    }
+}
+
+/// Replace `${key}` placeholders in a string using the given variables.
+pub fn resolve_placeholders(input: &str, vars: &[EnvVariable]) -> String {
+    let mut result = input.to_string();
+    for var in vars {
+        let placeholder = format!("${{{}}}", var.key);
+        result = result.replace(&placeholder, &var.value);
+    }
+    result
+}
+
+// ── Data models ───────────────────────────────────────────────
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestStore {
     pub requests: Vec<Request>,
+    #[serde(default)]
+    pub environments: Vec<Environment>,
+    #[serde(default)]
+    pub active_environment: Option<usize>,
 }
 impl Default for RequestStore {
     fn default() -> Self {
         Self {
             requests: vec![Request::sample()],
+            environments: Vec::new(),
+            active_environment: None,
         }
     }
 }
@@ -119,6 +166,7 @@ impl HttpMethod {
             Self::Options => "OPTIONS",
         }
     }
+    #[cfg(test)]
     pub fn parse(input: &str) -> Option<Self> {
         match input.trim().to_ascii_uppercase().as_str() {
             "GET" => Some(Self::Get),
@@ -158,6 +206,7 @@ pub fn format_headers(headers: &[HeaderEntry]) -> String {
         .collect::<Vec<_>>()
         .join("; ")
 }
+#[cfg(test)]
 pub fn parse_headers(input: &str) -> Vec<HeaderEntry> {
     input
         .split(';')
@@ -178,6 +227,9 @@ pub fn parse_headers(input: &str) -> Vec<HeaderEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Header parsing ────────────────────────────────────────────
+
     #[test]
     fn parse_headers_splits_pairs() {
         let headers = parse_headers("Accept: application/json; X-Test: 123");
@@ -186,10 +238,206 @@ mod tests {
         assert_eq!(headers[0].value, "application/json");
         assert_eq!(headers[1].name, "X-Test");
     }
+
+    #[test]
+    fn parse_headers_empty_input() {
+        let headers = parse_headers("");
+        assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn parse_headers_whitespace_only() {
+        let headers = parse_headers("  ;  ;  ");
+        assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn parse_headers_missing_value() {
+        let headers = parse_headers("X-Solo");
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].name, "X-Solo");
+        assert_eq!(headers[0].value, "");
+    }
+
+    // ── HttpMethod ────────────────────────────────────────────────
+
     #[test]
     fn parse_method_is_case_insensitive() {
         assert_eq!(HttpMethod::parse("post"), Some(HttpMethod::Post));
         assert_eq!(HttpMethod::parse(" PATCH "), Some(HttpMethod::Patch));
         assert_eq!(HttpMethod::parse("nope"), None);
+    }
+
+    #[test]
+    fn method_all_contains_every_variant() {
+        assert_eq!(HttpMethod::ALL.len(), 7);
+        assert!(HttpMethod::ALL.contains(&HttpMethod::Get));
+        assert!(HttpMethod::ALL.contains(&HttpMethod::Options));
+    }
+
+    #[test]
+    fn method_index_roundtrips() {
+        for (i, &m) in HttpMethod::ALL.iter().enumerate() {
+            assert_eq!(m.index(), i);
+        }
+    }
+
+    #[test]
+    fn method_display_matches_as_str() {
+        for &m in HttpMethod::ALL {
+            assert_eq!(m.to_string(), m.as_str());
+        }
+    }
+
+    // ── format_headers ────────────────────────────────────────────
+
+    #[test]
+    fn format_headers_empty_shows_none() {
+        assert_eq!(format_headers(&[]), "(none)");
+    }
+
+    #[test]
+    fn format_headers_single() {
+        let headers = vec![HeaderEntry {
+            name: String::from("Host"),
+            value: String::from("example.com"),
+        }];
+        assert_eq!(format_headers(&headers), "Host: example.com");
+    }
+
+    #[test]
+    fn format_headers_multiple_joined_by_semicolon() {
+        let headers = vec![
+            HeaderEntry { name: String::from("A"), value: String::from("1") },
+            HeaderEntry { name: String::from("B"), value: String::from("2") },
+        ];
+        assert_eq!(format_headers(&headers), "A: 1; B: 2");
+    }
+
+    // ── UiArea navigation ─────────────────────────────────────────
+
+    #[test]
+    fn ui_area_right_from_request_list() {
+        assert_eq!(UiArea::RequestList.right(), UiArea::Details);
+    }
+
+    #[test]
+    fn ui_area_right_from_environment() {
+        assert_eq!(UiArea::Environment.right(), UiArea::Details);
+    }
+
+    #[test]
+    fn ui_area_right_from_details_stays() {
+        assert_eq!(UiArea::Details.right(), UiArea::Details);
+    }
+
+    #[test]
+    fn ui_area_left_from_details() {
+        assert_eq!(UiArea::Details.left(), UiArea::RequestList);
+    }
+
+    #[test]
+    fn ui_area_left_from_request_list_stays() {
+        assert_eq!(UiArea::RequestList.left(), UiArea::RequestList);
+    }
+
+    #[test]
+    fn ui_area_down_from_top_row() {
+        assert_eq!(UiArea::RequestList.down(), UiArea::Response);
+        assert_eq!(UiArea::Details.down(), UiArea::Response);
+    }
+
+    #[test]
+    fn ui_area_down_from_environment() {
+        assert_eq!(UiArea::Environment.down(), UiArea::RequestList);
+    }
+
+    #[test]
+    fn ui_area_down_from_response_stays() {
+        assert_eq!(UiArea::Response.down(), UiArea::Response);
+    }
+
+    #[test]
+    fn ui_area_up_from_response() {
+        assert_eq!(UiArea::Response.up(), UiArea::RequestList);
+    }
+
+    #[test]
+    fn ui_area_up_from_request_list() {
+        assert_eq!(UiArea::RequestList.up(), UiArea::Environment);
+    }
+
+    #[test]
+    fn ui_area_up_from_environment_stays() {
+        assert_eq!(UiArea::Environment.up(), UiArea::Environment);
+    }
+
+    #[test]
+    fn ui_area_labels_not_empty() {
+        assert!(!UiArea::Environment.label().is_empty());
+        assert!(!UiArea::RequestList.label().is_empty());
+        assert!(!UiArea::Details.label().is_empty());
+        assert!(!UiArea::Response.label().is_empty());
+    }
+
+    // ── Request constructors ──────────────────────────────────────
+
+    #[test]
+    fn request_new_has_empty_fields() {
+        let req = Request::new(42);
+        assert_eq!(req.id, 42);
+        assert_eq!(req.method, HttpMethod::Get);
+        assert!(req.url.is_empty());
+        assert!(req.headers.is_empty());
+        assert!(req.body.is_empty());
+    }
+
+    #[test]
+    fn request_sample_has_url() {
+        let req = Request::sample();
+        assert!(!req.url.is_empty());
+        assert_eq!(req.method, HttpMethod::Get);
+    }
+
+    #[test]
+    fn request_store_default_not_empty() {
+        let store = RequestStore::default();
+        assert!(!store.requests.is_empty());
+        assert!(store.environments.is_empty());
+        assert!(store.active_environment.is_none());
+    }
+
+    // ── Environment & placeholders ─────────────────────────────────
+
+    #[test]
+    fn resolve_placeholders_replaces_variables() {
+        let vars = vec![
+            EnvVariable { key: String::from("host"), value: String::from("example.com") },
+            EnvVariable { key: String::from("token"), value: String::from("abc123") },
+        ];
+        let result = resolve_placeholders("https://${host}/api?t=${token}", &vars);
+        assert_eq!(result, "https://example.com/api?t=abc123");
+    }
+
+    #[test]
+    fn resolve_placeholders_no_vars_unchanged() {
+        let result = resolve_placeholders("https://example.com", &[]);
+        assert_eq!(result, "https://example.com");
+    }
+
+    #[test]
+    fn resolve_placeholders_missing_var_unchanged() {
+        let vars = vec![
+            EnvVariable { key: String::from("host"), value: String::from("example.com") },
+        ];
+        let result = resolve_placeholders("${host}/${missing}", &vars);
+        assert_eq!(result, "example.com/${missing}");
+    }
+
+    #[test]
+    fn environment_new_has_empty_vars() {
+        let env = Environment::new("test");
+        assert_eq!(env.name, "test");
+        assert!(env.variables.is_empty());
     }
 }

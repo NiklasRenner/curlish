@@ -8,6 +8,7 @@ use std::io::{self, Stdout};
 use std::time::Duration;
 
 mod app;
+mod headers;
 mod http;
 mod model;
 mod storage;

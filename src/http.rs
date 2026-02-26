@@ -1,32 +1,43 @@
-use crate::model::{HeaderEntry, HttpMethod, Request, ResponseSummary};
+use crate::model::{resolve_placeholders, EnvVariable, HeaderEntry, HttpMethod, Request, ResponseSummary};
 use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 const MAX_BODY_CHARS: usize = 64 * 1024;
 
-pub fn execute_request(req: &Request) -> Result<ResponseSummary> {
+pub fn execute_request(req: &Request, env_vars: &[EnvVariable]) -> Result<ResponseSummary> {
     let client = Client::builder()
         .user_agent("curlish/0.1")
         .build()
         .context("Failed to build HTTP client")?;
 
+    let url = resolve_placeholders(&req.url, env_vars);
+    let body = resolve_placeholders(&req.body, env_vars);
+    let headers: Vec<HeaderEntry> = req
+        .headers
+        .iter()
+        .map(|h| HeaderEntry {
+            name: h.name.clone(),
+            value: resolve_placeholders(&h.value, env_vars),
+        })
+        .collect();
+
     let mut builder = match req.method {
-        HttpMethod::Get => client.get(&req.url),
-        HttpMethod::Post => client.post(&req.url),
-        HttpMethod::Put => client.put(&req.url),
-        HttpMethod::Patch => client.patch(&req.url),
-        HttpMethod::Delete => client.delete(&req.url),
-        HttpMethod::Head => client.head(&req.url),
-        HttpMethod::Options => client.request(reqwest::Method::OPTIONS, &req.url),
+        HttpMethod::Get => client.get(&url),
+        HttpMethod::Post => client.post(&url),
+        HttpMethod::Put => client.put(&url),
+        HttpMethod::Patch => client.patch(&url),
+        HttpMethod::Delete => client.delete(&url),
+        HttpMethod::Head => client.head(&url),
+        HttpMethod::Options => client.request(reqwest::Method::OPTIONS, &url),
     };
 
-    let headers = build_headermap(&req.headers)?;
-    if !headers.is_empty() {
-        builder = builder.headers(headers);
+    let headermap = build_headermap(&headers)?;
+    if !headermap.is_empty() {
+        builder = builder.headers(headermap);
     }
-    if !req.body.trim().is_empty() && req.method != HttpMethod::Get {
-        builder = builder.body(req.body.clone());
+    if !body.trim().is_empty() && req.method != HttpMethod::Get {
+        builder = builder.body(body);
     }
 
     let resp = builder.send().context("Request failed")?;

@@ -1,5 +1,6 @@
+﻿use crate::headers;
 use crate::http;
-use crate::model::{HeaderEntry, HttpMethod, Request, RequestStore, ResponseSummary, UiArea};
+use crate::model::{EnvVariable, Environment, HeaderEntry, HttpMethod, Request, RequestStore, ResponseSummary, UiArea};
 use crate::storage;
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -30,10 +31,11 @@ pub enum Mode {
     HeaderList {
         selected: usize,
     },
-    /// Editing a single header's name or value inline
+    /// Editing a single header's name or value inline (with autocomplete)
     HeaderEdit {
         index: usize,
         editing_value: bool, // false = name, true = value
+        autocomplete_idx: Option<usize>, // currently highlighted suggestion
     },
     /// Multi-line body editor within the TUI
     BodyEditor {
@@ -41,6 +43,19 @@ pub enum Mode {
         cursor_row: usize,
         cursor_col: usize,
     },
+    /// Confirm delete: Up/Down to select, Enter to confirm
+    ConfirmDelete { selected: usize },
+    /// Confirm quit with unsaved changes
+    ConfirmQuit { selected: usize },
+    /// Environment editor: manage variables in the active environment
+    EnvEditor { selected: usize },
+    /// Editing a single env variable's key or value
+    EnvVarEdit {
+        index: usize,
+        editing_value: bool,
+    },
+    /// Editing the environment name
+    EnvNameEdit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +99,7 @@ impl App {
         })
     }
 
-    // ── Key dispatch ──────────────────────────────────────────────
+    // â”€â”€ Key dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<AppAction> {
         match &self.mode.clone() {
@@ -94,6 +109,11 @@ impl App {
             Mode::HeaderList { .. } => self.handle_header_list(key),
             Mode::HeaderEdit { .. } => self.handle_header_edit(key),
             Mode::BodyEditor { .. } => self.handle_body_editor(key),
+            Mode::ConfirmDelete { .. } => self.handle_confirm_delete(key),
+            Mode::ConfirmQuit { .. } => self.handle_confirm_quit(key),
+            Mode::EnvEditor { .. } => self.handle_env_editor(key),
+            Mode::EnvVarEdit { .. } => self.handle_env_var_edit(key),
+            Mode::EnvNameEdit => self.handle_env_name_edit(key),
         }
     }
 
@@ -104,7 +124,13 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') => return Ok(AppAction::Quit),
+            KeyCode::Char('q') => {
+                if storage::has_unsaved_changes(&self.storage_path, &self.store) {
+                    self.mode = Mode::ConfirmQuit { selected: 1 };
+                } else {
+                    return Ok(AppAction::Quit);
+                }
+            }
 
             // WASD moves between areas
             KeyCode::Char('w') => self.focused_area = self.focused_area.up(),
@@ -114,33 +140,52 @@ impl App {
 
             // Up/Down navigates within the focused area
             KeyCode::Up => match self.focused_area {
+                UiArea::Environment => self.cycle_environment(-1),
                 UiArea::RequestList => self.move_selection(-1),
                 UiArea::Details => self.move_field(-1),
                 UiArea::Response => self.scroll_response(-1),
             },
             KeyCode::Down => match self.focused_area {
+                UiArea::Environment => self.cycle_environment(1),
                 UiArea::RequestList => self.move_selection(1),
                 UiArea::Details => self.move_field(1),
                 UiArea::Response => self.scroll_response(1),
             },
 
             // Actions
-            KeyCode::Char('n') => self.add_request(),
-            KeyCode::Char('x') => self.delete_request(),
+            KeyCode::Char('n') => {
+                if self.focused_area == UiArea::Environment {
+                    self.add_environment();
+                } else {
+                    self.add_request();
+                }
+            }
+            KeyCode::Char('x') => {
+                if self.focused_area == UiArea::Environment {
+                    self.delete_environment();
+                } else if !self.store.requests.is_empty() {
+                    self.mode = Mode::ConfirmDelete { selected: 1 };
+                }
+            }
             KeyCode::Char('e') => {
                 if self.focused_area == UiArea::Details {
                     self.start_edit();
+                } else if self.focused_area == UiArea::Environment {
+                    if self.store.active_environment.is_some() {
+                        self.mode = Mode::EnvEditor { selected: 0 };
+                    }
                 }
             }
             KeyCode::Char('r') => self.execute_request()?,
             KeyCode::Char('S') => self.save_store()?,
+            KeyCode::Char('c') => self.duplicate_request(),
             _ => {}
         }
 
         Ok(AppAction::Continue)
     }
 
-    // ── Inline text edit (Name, URL) ──────────────────────────────
+    // â”€â”€ Inline text edit (Name, URL) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn handle_inline_edit(&mut self, field: EditField, key: KeyEvent) -> Result<AppAction> {
         match key.code {
@@ -160,7 +205,7 @@ impl App {
         Ok(AppAction::Continue)
     }
 
-    // ── Method picker ─────────────────────────────────────────────
+    // â”€â”€ Method picker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn handle_method_picker(&mut self, key: KeyEvent) -> Result<AppAction> {
         let Mode::MethodPicker { ref mut filter, ref mut selected } = self.mode else {
@@ -211,7 +256,7 @@ impl App {
             .collect()
     }
 
-    // ── Header list ───────────────────────────────────────────────
+    // â”€â”€ Header list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn handle_header_list(&mut self, key: KeyEvent) -> Result<AppAction> {
         let header_count = self.current_request().map_or(0, |r| r.headers.len());
@@ -220,7 +265,9 @@ impl App {
         };
 
         match key.code {
-            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
             KeyCode::Up => {
                 if header_count > 0 {
                     *selected = if *selected == 0 { header_count - 1 } else { *selected - 1 };
@@ -234,12 +281,12 @@ impl App {
             KeyCode::Char('n') => {
                 if let Some(req) = self.current_request_mut() {
                     req.headers.push(HeaderEntry {
-                        name: String::from("Header-Name"),
-                        value: String::from("value"),
+                        name: String::new(),
+                        value: String::new(),
                     });
                     let idx = req.headers.len() - 1;
-                    self.input = req.headers[idx].name.clone();
-                    self.mode = Mode::HeaderEdit { index: idx, editing_value: false };
+                    self.input = String::new();
+                    self.mode = Mode::HeaderEdit { index: idx, editing_value: false, autocomplete_idx: None };
                 }
             }
             KeyCode::Char('x') => {
@@ -262,7 +309,7 @@ impl App {
                     if let Some(req) = self.current_request() {
                         self.input = req.headers[sel].name.clone();
                     }
-                    self.mode = Mode::HeaderEdit { index: sel, editing_value: false };
+                    self.mode = Mode::HeaderEdit { index: sel, editing_value: false, autocomplete_idx: None };
                 }
             }
             _ => {}
@@ -270,10 +317,10 @@ impl App {
         Ok(AppAction::Continue)
     }
 
-    // ── Header inline edit ────────────────────────────────────────
+    // â”€â”€ Header inline edit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn handle_header_edit(&mut self, key: KeyEvent) -> Result<AppAction> {
-        let Mode::HeaderEdit { index, editing_value } = self.mode else {
+        let Mode::HeaderEdit { index, editing_value, autocomplete_idx } = self.mode else {
             return Ok(AppAction::Continue);
         };
         match key.code {
@@ -281,32 +328,112 @@ impl App {
                 self.input.clear();
                 self.mode = Mode::HeaderList { selected: index };
             }
-            KeyCode::Tab | KeyCode::Enter => {
-                // Save current part and move to next or finish
-                let input_val = self.input.trim().to_string();
-                if let Some(req) = self.current_request_mut() {
-                    if index < req.headers.len() {
-                        if !editing_value {
-                            req.headers[index].name = input_val;
-                            let next_val = req.headers[index].value.clone();
-                            self.input = next_val;
-                            self.mode = Mode::HeaderEdit { index, editing_value: true };
-                        } else {
-                            req.headers[index].value = input_val;
-                            self.input.clear();
-                            self.mode = Mode::HeaderList { selected: index };
+            KeyCode::Enter => {
+                // If an autocomplete suggestion is highlighted, accept it first
+                if let Some(ai) = autocomplete_idx {
+                    let suggestions = self.current_suggestions(editing_value, index);
+                    if let Some(s) = suggestions.get(ai) {
+                        self.input = s.to_string();
+                    }
+                    self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: None };
+                } else {
+                    // Save and advance
+                    let input_val = self.input.trim().to_string();
+                    if let Some(req) = self.current_request_mut() {
+                        if index < req.headers.len() {
+                            if !editing_value {
+                                req.headers[index].name = input_val;
+                                let next_val = req.headers[index].value.clone();
+                                self.input = next_val;
+                                self.mode = Mode::HeaderEdit { index, editing_value: true, autocomplete_idx: None };
+                            } else {
+                                req.headers[index].value = input_val;
+                                self.input.clear();
+                                self.mode = Mode::HeaderList { selected: index };
+                            }
                         }
                     }
                 }
             }
-            KeyCode::Backspace => { self.input.pop(); }
-            KeyCode::Char(ch) => self.input.push(ch),
+            KeyCode::Tab => {
+                // Accept highlighted suggestion if any, otherwise advance field
+                let suggestions = self.current_suggestions(editing_value, index);
+                if let Some(ai) = autocomplete_idx {
+                    if let Some(s) = suggestions.get(ai) {
+                        self.input = s.to_string();
+                    }
+                    self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: None };
+                } else if !suggestions.is_empty() {
+                    // Start cycling
+                    self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: Some(0) };
+                } else {
+                    // No suggestions, advance to next part
+                    let input_val = self.input.trim().to_string();
+                    if let Some(req) = self.current_request_mut() {
+                        if index < req.headers.len() {
+                            if !editing_value {
+                                req.headers[index].name = input_val;
+                                let next_val = req.headers[index].value.clone();
+                                self.input = next_val;
+                                self.mode = Mode::HeaderEdit { index, editing_value: true, autocomplete_idx: None };
+                            } else {
+                                req.headers[index].value = input_val;
+                                self.input.clear();
+                                self.mode = Mode::HeaderList { selected: index };
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Up => {
+                let count = self.current_suggestions(editing_value, index).len();
+                if count > 0 {
+                    let new_idx = match autocomplete_idx {
+                        Some(0) | None => count - 1,
+                        Some(i) => i - 1,
+                    };
+                    self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: Some(new_idx) };
+                }
+            }
+            KeyCode::Down => {
+                let count = self.current_suggestions(editing_value, index).len();
+                if count > 0 {
+                    let new_idx = match autocomplete_idx {
+                        None => 0,
+                        Some(i) => (i + 1) % count,
+                    };
+                    self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: Some(new_idx) };
+                }
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+                // Reset autocomplete selection on input change
+                self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: None };
+            }
+            KeyCode::Char(ch) => {
+                self.input.push(ch);
+                self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: None };
+            }
             _ => {}
         }
         Ok(AppAction::Continue)
     }
 
-    // ── Body editor ───────────────────────────────────────────────
+    pub fn current_suggestions(&self, editing_value: bool, index: usize) -> Vec<&str> {
+        if !editing_value {
+            headers::filter_suggestions(headers::COMMON_HEADER_NAMES, &self.input)
+        } else {
+            let header_name = self
+                .current_request()
+                .and_then(|r| r.headers.get(index))
+                .map(|h| h.name.as_str())
+                .unwrap_or("");
+            let values = headers::common_values_for(header_name);
+            headers::filter_suggestions(values, &self.input)
+        }
+    }
+
+    // â”€â”€ Body editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn handle_body_editor(&mut self, key: KeyEvent) -> Result<AppAction> {
         let Mode::BodyEditor { ref mut lines, ref mut cursor_row, ref mut cursor_col } = self.mode else {
@@ -321,6 +448,19 @@ impl App {
             }
             self.mode = Mode::Normal;
             self.status_line = String::from("Body saved");
+            return Ok(AppAction::Continue);
+        }
+
+        // Ctrl+P to prettify JSON
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p') {
+            let raw = lines.join("\n");
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Ok(pretty) = serde_json::to_string_pretty(&parsed) {
+                    *lines = pretty.lines().map(String::from).collect();
+                    *cursor_row = 0;
+                    *cursor_col = 0;
+                }
+            }
             return Ok(AppAction::Continue);
         }
 
@@ -382,7 +522,210 @@ impl App {
         Ok(AppAction::Continue)
     }
 
-    // ── Navigation ────────────────────────────────────────────────
+    // â”€â”€ Confirm delete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    fn handle_confirm_delete(&mut self, key: KeyEvent) -> Result<AppAction> {
+        let Mode::ConfirmDelete { ref mut selected } = self.mode else {
+            return Ok(AppAction::Continue);
+        };
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                *selected = if *selected == 0 { 1 } else { 0 };
+            }
+            KeyCode::Enter => {
+                if *selected == 0 {
+                    self.delete_request();
+                } else {
+                    self.status_line = String::from("Delete cancelled");
+                }
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.status_line = String::from("Delete cancelled");
+            }
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
+    // â”€â”€ Confirm quit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    fn handle_confirm_quit(&mut self, key: KeyEvent) -> Result<AppAction> {
+        let Mode::ConfirmQuit { ref mut selected } = self.mode else {
+            return Ok(AppAction::Continue);
+        };
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                *selected = if *selected == 0 { 1 } else { 0 };
+            }
+            KeyCode::Enter => {
+                if *selected == 0 {
+                    return Ok(AppAction::Quit);
+                }
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
+    // â”€â”€ Environment editing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    fn handle_env_editor(&mut self, key: KeyEvent) -> Result<AppAction> {
+        let active_idx = match self.store.active_environment {
+            Some(i) => i,
+            None => {
+                self.mode = Mode::Normal;
+                return Ok(AppAction::Continue);
+            }
+        };
+        let var_count = self.store.environments.get(active_idx).map_or(0, |e| e.variables.len());
+        let Mode::EnvEditor { ref mut selected } = self.mode else {
+            return Ok(AppAction::Continue);
+        };
+
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Up => {
+                if var_count > 0 {
+                    *selected = if *selected == 0 { var_count - 1 } else { *selected - 1 };
+                }
+            }
+            KeyCode::Down => {
+                if var_count > 0 {
+                    *selected = (*selected + 1) % var_count;
+                }
+            }
+            KeyCode::Char('n') => {
+                if let Some(env) = self.store.environments.get_mut(active_idx) {
+                    env.variables.push(EnvVariable {
+                        key: String::new(),
+                        value: String::new(),
+                    });
+                    let idx = env.variables.len() - 1;
+                    self.input = String::new();
+                    self.mode = Mode::EnvVarEdit { index: idx, editing_value: false };
+                }
+            }
+            KeyCode::Char('x') => {
+                let sel = *selected;
+                if let Some(env) = self.store.environments.get_mut(active_idx) {
+                    if sel < env.variables.len() {
+                        env.variables.remove(sel);
+                    }
+                }
+                let new_count = self.store.environments.get(active_idx).map_or(0, |e| e.variables.len());
+                if let Mode::EnvEditor { ref mut selected } = self.mode {
+                    if *selected >= new_count && new_count > 0 {
+                        *selected = new_count - 1;
+                    }
+                }
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                let sel = *selected;
+                if sel < var_count {
+                    if let Some(env) = self.store.environments.get(active_idx) {
+                        self.input = env.variables[sel].key.clone();
+                    }
+                    self.mode = Mode::EnvVarEdit { index: sel, editing_value: false };
+                }
+            }
+            KeyCode::Char('r') => {
+                // Rename environment
+                if let Some(env) = self.store.environments.get(active_idx) {
+                    self.input = env.name.clone();
+                }
+                self.mode = Mode::EnvNameEdit;
+            }
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
+    fn handle_env_var_edit(&mut self, key: KeyEvent) -> Result<AppAction> {
+        let Mode::EnvVarEdit { index, editing_value } = self.mode else {
+            return Ok(AppAction::Continue);
+        };
+        let active_idx = self.store.active_environment.unwrap_or(0);
+
+        match key.code {
+            KeyCode::Esc => {
+                self.input.clear();
+                self.mode = Mode::EnvEditor { selected: index };
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                let input_val = self.input.trim().to_string();
+                if let Some(env) = self.store.environments.get_mut(active_idx) {
+                    if index < env.variables.len() {
+                        if !editing_value {
+                            env.variables[index].key = input_val;
+                            let next_val = env.variables[index].value.clone();
+                            self.input = next_val;
+                            self.mode = Mode::EnvVarEdit { index, editing_value: true };
+                        } else {
+                            env.variables[index].value = input_val;
+                            self.input.clear();
+                            self.mode = Mode::EnvEditor { selected: index };
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => { self.input.pop(); }
+            KeyCode::Char(ch) => self.input.push(ch),
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
+    fn handle_env_name_edit(&mut self, key: KeyEvent) -> Result<AppAction> {
+        match key.code {
+            KeyCode::Esc => {
+                self.input.clear();
+                self.mode = Mode::EnvEditor { selected: 0 };
+            }
+            KeyCode::Enter => {
+                let name = self.input.trim().to_string();
+                if let Some(idx) = self.store.active_environment {
+                    if let Some(env) = self.store.environments.get_mut(idx) {
+                        env.name = name;
+                    }
+                }
+                self.input.clear();
+                self.mode = Mode::EnvEditor { selected: 0 };
+            }
+            KeyCode::Backspace => { self.input.pop(); }
+            KeyCode::Char(ch) => self.input.push(ch),
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
+    fn add_environment(&mut self) {
+        let name = format!("env-{}", self.store.environments.len() + 1);
+        self.store.environments.push(Environment::new(&name));
+        self.store.active_environment = Some(self.store.environments.len() - 1);
+        self.status_line = format!("Environment \"{name}\" created");
+    }
+
+    fn delete_environment(&mut self) {
+        if let Some(idx) = self.store.active_environment {
+            if idx < self.store.environments.len() {
+                self.store.environments.remove(idx);
+                if self.store.environments.is_empty() {
+                    self.store.active_environment = None;
+                } else {
+                    self.store.active_environment = Some(idx.min(self.store.environments.len() - 1));
+                }
+                self.status_line = String::from("Environment deleted");
+            }
+        }
+    }
+
+    // â”€â”€ Navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn move_selection(&mut self, delta: isize) {
         let len = self.store.requests.len();
@@ -413,7 +756,7 @@ impl App {
         }
     }
 
-    // ── Request CRUD ──────────────────────────────────────────────
+    // â”€â”€ Request CRUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn add_request(&mut self) {
         self.store.requests.push(Request::new(self.next_id));
@@ -433,7 +776,18 @@ impl App {
         self.status_line = "Request deleted".into();
     }
 
-    // ── Editing ───────────────────────────────────────────────────
+    fn duplicate_request(&mut self) {
+        let Some(req) = self.current_request().cloned() else { return };
+        let mut dup = req;
+        dup.id = self.next_id;
+        self.next_id += 1;
+        dup.name = format!("{}-copy", dup.name);
+        self.store.requests.insert(self.selected + 1, dup);
+        self.selected += 1;
+        self.status_line = "Request duplicated".into();
+    }
+
+    // â”€â”€ Editing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn start_edit(&mut self) {
         let Some(req) = self.current_request() else { return };
@@ -483,7 +837,7 @@ impl App {
         Ok(())
     }
 
-    // ── HTTP execution ────────────────────────────────────────────
+    // â”€â”€ HTTP execution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn execute_request(&mut self) -> Result<()> {
         let req = self.current_request().context("No request selected")?;
@@ -492,7 +846,8 @@ impl App {
             return Ok(());
         }
 
-        match http::execute_request(req) {
+        let env_vars = self.active_env_vars();
+        match http::execute_request(req, &env_vars) {
             Ok(resp) => {
                 self.status_line = "Request completed".into();
                 self.response = Some(resp);
@@ -502,7 +857,7 @@ impl App {
         Ok(())
     }
 
-    // ── Persistence ───────────────────────────────────────────────
+    // â”€â”€ Persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn save_store(&mut self) -> Result<()> {
         storage::save(&self.storage_path, &self.store)?;
@@ -510,7 +865,7 @@ impl App {
         Ok(())
     }
 
-    // ── Accessors ─────────────────────────────────────────────────
+    // â”€â”€ Accessors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     pub fn current_request(&self) -> Option<&Request> {
         self.store.requests.get(self.selected)
@@ -519,5 +874,121 @@ impl App {
     pub fn current_request_mut(&mut self) -> Option<&mut Request> {
         self.store.requests.get_mut(self.selected)
     }
+
+    pub fn active_env_vars(&self) -> Vec<EnvVariable> {
+        self.store
+            .active_environment
+            .and_then(|i| self.store.environments.get(i))
+            .map(|e| e.variables.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn active_env_name(&self) -> &str {
+        self.store
+            .active_environment
+            .and_then(|i| self.store.environments.get(i))
+            .map(|e| e.name.as_str())
+            .unwrap_or("(none)")
+    }
+
+    fn cycle_environment(&mut self, delta: isize) {
+        let len = self.store.environments.len();
+        if len == 0 {
+            return;
+        }
+        let current = self.store.active_environment.unwrap_or(0) as isize;
+        let next = (current + delta).rem_euclid(len as isize) as usize;
+        self.store.active_environment = Some(next);
+    }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filtered_methods_empty_filter_returns_all() {
+        let result = App::filtered_methods("");
+        assert_eq!(result.len(), HttpMethod::ALL.len());
+    }
+
+    #[test]
+    fn filtered_methods_narrows_by_substring() {
+        let result = App::filtered_methods("P");
+        assert!(result.contains(&HttpMethod::Post));
+        assert!(result.contains(&HttpMethod::Put));
+        assert!(result.contains(&HttpMethod::Patch));
+        assert!(!result.contains(&HttpMethod::Get));
+    }
+
+    #[test]
+    fn filtered_methods_case_insensitive() {
+        let result = App::filtered_methods("get");
+        assert_eq!(result, vec![HttpMethod::Get]);
+    }
+
+    #[test]
+    fn filtered_methods_no_match() {
+        let result = App::filtered_methods("ZZZZZ");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn current_field_maps_indices() {
+        let app = App {
+            store: RequestStore::default(),
+            selected: 0,
+            field_index: 0,
+            mode: Mode::Normal,
+            input: String::new(),
+            status_line: String::new(),
+            response: None,
+            storage_path: PathBuf::from("test"),
+            focused_area: UiArea::RequestList,
+            response_scroll: 0,
+            next_id: 1,
+        };
+
+        let fields = [
+            EditField::Name,
+            EditField::Method,
+            EditField::Url,
+            EditField::Headers,
+            EditField::Body,
+        ];
+        for (i, expected) in fields.iter().enumerate() {
+            let a = App {
+                field_index: i,
+                store: app.store.clone(),
+                selected: app.selected,
+                mode: Mode::Normal,
+                input: String::new(),
+                status_line: String::new(),
+                response: None,
+                storage_path: PathBuf::from("test"),
+                focused_area: UiArea::RequestList,
+                response_scroll: 0,
+                next_id: 1,
+            };
+            assert_eq!(a.current_field(), *expected);
+        }
+    }
+
+    #[test]
+    fn current_field_out_of_bounds_returns_body() {
+        let app = App {
+            store: RequestStore::default(),
+            selected: 0,
+            field_index: 99,
+            mode: Mode::Normal,
+            input: String::new(),
+            status_line: String::new(),
+            response: None,
+            storage_path: PathBuf::from("test"),
+            focused_area: UiArea::RequestList,
+            response_scroll: 0,
+            next_id: 1,
+        };
+        assert_eq!(app.current_field(), EditField::Body);
+    }
+}
