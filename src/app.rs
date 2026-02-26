@@ -2,6 +2,7 @@
 use crate::http;
 use crate::model::{EnvVariable, Environment, HeaderEntry, HttpMethod, Request, RequestStore, ResponseSummary, UiArea};
 use crate::storage;
+use crate::sync::{self, SyncConfig, SyncStatus};
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
@@ -56,6 +57,12 @@ pub enum Mode {
     },
     /// Editing the environment name
     EnvNameEdit,
+    /// Sync conflict: choose Keep local / Take remote / Cancel
+    SyncConflict { selected: usize },
+    /// Setup sync: enter repo URL
+    SyncSetup,
+    /// Sync error popup: show full error, dismiss with Esc/Enter
+    SyncError { message: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,12 +82,20 @@ pub struct App {
     pub storage_path: PathBuf,
     pub focused_area: UiArea,
     pub response_scroll: u16,
+    pub sync_config: Option<SyncConfig>,
     next_id: u64,
 }
 
 impl App {
     pub fn load() -> Result<Self> {
         let storage_path = storage::default_path();
+        let sync_config = sync::load_config();
+
+        // Try to pull latest before loading
+        if let Some(ref cfg) = sync_config {
+            let _ = sync::pull(cfg, &storage_path);
+        }
+
         let store = storage::load_or_default(&storage_path)?;
         let next_id = store.requests.iter().map(|r| r.id).max().unwrap_or(0) + 1;
 
@@ -95,6 +110,7 @@ impl App {
             storage_path,
             focused_area: UiArea::RequestList,
             response_scroll: 0,
+            sync_config,
             next_id,
         })
     }
@@ -114,6 +130,9 @@ impl App {
             Mode::EnvEditor { .. } => self.handle_env_editor(key),
             Mode::EnvVarEdit { .. } => self.handle_env_var_edit(key),
             Mode::EnvNameEdit => self.handle_env_name_edit(key),
+            Mode::SyncConflict { .. } => self.handle_sync_conflict(key),
+            Mode::SyncSetup => self.handle_sync_setup(key),
+            Mode::SyncError { .. } => self.handle_sync_error(key),
         }
     }
 
@@ -179,6 +198,11 @@ impl App {
             KeyCode::Char('r') => self.execute_request()?,
             KeyCode::Char('S') => self.save_store()?,
             KeyCode::Char('c') => self.duplicate_request(),
+            KeyCode::Char('g') => self.trigger_sync(),
+            KeyCode::Char('G') => {
+                self.input = self.sync_config.as_ref().map_or(String::new(), |c| c.repo_url.clone());
+                self.mode = Mode::SyncSetup;
+            }
             _ => {}
         }
 
@@ -416,7 +440,7 @@ impl App {
         }
     }
 
-    // â”€â”€ Body editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ Body editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn handle_body_editor(&mut self, key: KeyEvent) -> Result<AppAction> {
         let Mode::BodyEditor { ref mut lines, ref mut cursor_row, ref mut cursor_col } = self.mode else {
@@ -839,11 +863,176 @@ impl App {
 
     fn save_store(&mut self) -> Result<()> {
         storage::save(&self.storage_path, &self.store)?;
-        self.status_line = format!("Saved to {}", self.storage_path.display());
+
+        // Auto-push after save if sync is configured
+        if let Some(ref cfg) = self.sync_config {
+            match sync::push(cfg, &self.storage_path) {
+                Ok(SyncStatus::Ok) => {
+                    self.status_line = format!("Saved & synced to {}", self.storage_path.display());
+                }
+                Ok(SyncStatus::Conflict) => {
+                    self.status_line = "Saved locally, sync conflict detected".into();
+                    self.mode = Mode::SyncConflict { selected: 2 }; // default to Cancel
+                }
+                Ok(SyncStatus::Disabled) => {
+                    self.show_sync_error("Sync unavailable (no git repo initialized)");
+                }
+                Err(e) => {
+                    self.show_sync_error(&format!("Push failed: {e}"));
+                }
+            }
+        } else {
+            self.status_line = format!("Saved to {}", self.storage_path.display());
+        }
         Ok(())
     }
 
-    // â”€â”€ Accessors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Sync --
+
+    fn trigger_sync(&mut self) {
+        let Some(ref cfg) = self.sync_config.clone() else {
+            self.status_line = "No sync configured (Shift+G to set up)".into();
+            return;
+        };
+
+        self.status_line = "Syncing...".into();
+
+        // First save current state
+        if let Err(e) = storage::save(&self.storage_path, &self.store) {
+            self.show_sync_error(&format!("Save failed: {e}"));
+            return;
+        }
+
+        // Push
+        match sync::push(&cfg, &self.storage_path) {
+            Ok(SyncStatus::Ok) => {
+                self.status_line = "Synced successfully".into();
+            }
+            Ok(SyncStatus::Conflict) => {
+                self.status_line = "Sync conflict".into();
+                self.mode = Mode::SyncConflict { selected: 2 };
+            }
+            Ok(SyncStatus::Disabled) => {
+                self.show_sync_error("Sync unavailable (no git repo initialized)");
+            }
+            Err(e) => {
+                self.show_sync_error(&format!("Sync failed: {e}"));
+            }
+        }
+    }
+
+    fn handle_sync_conflict(&mut self, key: KeyEvent) -> Result<AppAction> {
+        let Mode::SyncConflict { ref mut selected } = self.mode else {
+            return Ok(AppAction::Continue);
+        };
+        match key.code {
+            KeyCode::Up => *selected = if *selected == 0 { 2 } else { *selected - 1 },
+            KeyCode::Down => *selected = (*selected + 1) % 3,
+            KeyCode::Enter => {
+                let choice = *selected;
+                self.mode = Mode::Normal;
+                match choice {
+                    0 => {
+                        // Keep local — force push
+                        if let Some(ref cfg) = self.sync_config {
+                            match sync::force_push(cfg, &self.storage_path) {
+                                Ok(()) => self.status_line = "Forced push — local version kept".into(),
+                                Err(e) => self.show_sync_error(&format!("Force push failed: {e}")),
+                            }
+                        }
+                    }
+                    1 => {
+                        // Take remote — force pull and reload
+                        if let Some(ref cfg) = self.sync_config {
+                            match sync::force_pull(cfg, &self.storage_path) {
+                                Ok(()) => {
+                                    match storage::load_or_default(&self.storage_path) {
+                                        Ok(store) => {
+                                            self.store = store;
+                                            self.selected = 0;
+                                            self.next_id = self.store.requests.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+                                            self.status_line = "Loaded remote version".into();
+                                        }
+                                        Err(e) => self.show_sync_error(&format!("Failed to reload: {e}")),
+                                    }
+                                }
+                                Err(e) => self.show_sync_error(&format!("Force pull failed: {e}")),
+                            }
+                        }
+                    }
+                    _ => {
+                        self.status_line = "Sync conflict unresolved".into();
+                    }
+                }
+            }
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.status_line = "Sync conflict unresolved".into();
+            }
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
+    fn handle_sync_setup(&mut self, key: KeyEvent) -> Result<AppAction> {
+        match key.code {
+            KeyCode::Esc => {
+                self.input.clear();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                let url = self.input.trim().to_string();
+                self.input.clear();
+                self.mode = Mode::Normal;
+
+                if url.is_empty() {
+                    // Disable sync
+                    self.sync_config = None;
+                    let _ = std::fs::remove_file(sync::config_path());
+                    self.status_line = "Sync disabled".into();
+                } else {
+                    let cfg = SyncConfig {
+                        repo_url: url,
+                        branch: String::from("main"),
+                    };
+                    match sync::save_config(&cfg) {
+                        Ok(()) => {
+                            if !sync::is_git_available() {
+                                self.show_sync_error("git is not installed");
+                            } else if let Err(e) = sync::init(&cfg, &self.storage_path) {
+                                self.show_sync_error(&format!("Init failed: {e}"));
+                            } else {
+                                self.status_line = "Sync configured".into();
+                            }
+                            self.sync_config = Some(cfg);
+                        }
+                        Err(e) => self.show_sync_error(&format!("Failed to save config: {e}")),
+                    }
+                }
+            }
+            KeyCode::Backspace => { self.input.pop(); }
+            KeyCode::Char(ch) => self.input.push(ch),
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
+    fn handle_sync_error(&mut self, key: KeyEvent) -> Result<AppAction> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                self.mode = Mode::Normal;
+            }
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
+    fn show_sync_error(&mut self, message: &str) {
+        self.status_line = "Sync error".into();
+        self.mode = Mode::SyncError { message: message.to_string() };
+    }
+
+    // ── Accessors ─────────────────────────────────────────────────
 
     pub fn current_request(&self) -> Option<&Request> {
         self.store.requests.get(self.selected)
@@ -924,6 +1113,7 @@ mod tests {
             storage_path: PathBuf::from("test"),
             focused_area: UiArea::RequestList,
             response_scroll: 0,
+            sync_config: None,
             next_id: 1,
         };
 
@@ -946,6 +1136,7 @@ mod tests {
                 storage_path: PathBuf::from("test"),
                 focused_area: UiArea::RequestList,
                 response_scroll: 0,
+                sync_config: None,
                 next_id: 1,
             };
             assert_eq!(a.current_field(), *expected);
@@ -965,6 +1156,7 @@ mod tests {
             storage_path: PathBuf::from("test"),
             focused_area: UiArea::RequestList,
             response_scroll: 0,
+            sync_config: None,
             next_id: 1,
         };
         assert_eq!(app.current_field(), EditField::Body);

@@ -12,6 +12,7 @@ A lightweight TUI for saving and running HTTP requests, sitting between curl and
 - Header name/value autocomplete for common HTTP headers
 - Inline body editor with `Ctrl+P` to prettify JSON
 - Warns on quit with unsaved changes
+- Optional git-based sync for sharing requests across machines
 
 ## Keys
 
@@ -26,6 +27,8 @@ A lightweight TUI for saving and running HTTP requests, sitting between curl and
 | `C` | Copy (duplicate) selected request |
 | `X` | Delete request / environment (context-dependent) |
 | `Ctrl+S` | Save to disk |
+| `G` | Sync (pull + push via git) |
+| `Shift+G` | Configure sync (enter repo URL, empty to disable) |
 | `Q` | Quit (confirms if unsaved changes) |
 
 ### Edit modes
@@ -45,6 +48,16 @@ using the active environment.
 
 ## Storage
 Requests and environments are saved to `.curlish.json` in the working directory.
+
+## Sync
+Optionally back the JSON file with a git repo for sharing across machines.
+
+1. Press `Shift+G` and enter a git repo URL to enable
+2. Press `G` to manually sync (save → commit → push)
+3. `Ctrl+S` auto-pushes when sync is configured
+4. On conflict, choose **Keep local** (force push) or **Take remote** (force pull)
+
+Config is stored in `.curlish-sync.toml`. Clear the URL to disable.
 
 ## Run
 ```sh

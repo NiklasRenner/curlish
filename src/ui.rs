@@ -10,7 +10,7 @@ const STYLE_SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier
 const STYLE_STATUS: Style = Style::new().fg(Color::Yellow);
 const STYLE_RESPONSE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 const STYLE_FOCUSED_BORDER: Style = Style::new().fg(Color::Cyan);
-const KEY_HELP: &str = "WASD: areas  \u{2191}\u{2193}: navigate  E: edit  R: run  Ctrl+S: save  N: new  C: copy  X: del  Q: quit";
+const KEY_HELP: &str = "WASD: areas  \u{2191}\u{2193}: nav  E: edit  R: run  Ctrl+S: save  N: new  C: copy  X: del  G: sync  Q: quit";
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
     let outer = Layout::default()
@@ -70,6 +70,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         }
         Mode::EnvNameEdit => {
             draw_env_name_edit(frame, app);
+        }
+        Mode::SyncConflict { selected } => {
+            draw_sync_conflict(frame, *selected);
+        }
+        Mode::SyncSetup => {
+            draw_sync_setup(frame, app);
+        }
+        Mode::SyncError { message } => {
+            draw_sync_error(frame, message);
         }
         _ => {}
     }
@@ -211,6 +220,15 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
         Mode::EnvNameEdit => {
             format!("ENV NAME: {} | Enter: confirm  Esc: cancel", app.input)
+        }
+        Mode::SyncConflict { .. } => {
+            String::from("SYNC CONFLICT | \u{2191}\u{2193}: select  Enter: confirm  Esc: cancel")
+        }
+        Mode::SyncSetup => {
+            format!("SYNC REPO URL: {} | Enter: confirm  Esc: cancel  (empty to disable)", app.input)
+        }
+        Mode::SyncError { .. } => {
+            String::from("Esc/Enter: dismiss")
         }
     };
 
@@ -531,4 +549,73 @@ fn draw_env_name_edit(frame: &mut Frame<'_>, app: &App) {
     ])];
 
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn draw_sync_conflict(frame: &mut Frame<'_>, selected: usize) {
+    let area = centered_rect(35, 25, frame.size());
+    frame.render_widget(Clear, area);
+
+    let options = ["Keep local", "Take remote", "Cancel"];
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let style = if i == selected { STYLE_SELECTED } else { Style::default() };
+            ListItem::new(format!("  {label}")).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title("Sync Conflict")
+            .borders(Borders::ALL)
+            .border_style(STYLE_FOCUSED_BORDER),
+    );
+    frame.render_widget(list, area);
+}
+
+fn draw_sync_setup(frame: &mut Frame<'_>, app: &App) {
+    let area = centered_rect(60, 15, frame.size());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title("Sync Setup (empty to disable)")
+        .borders(Borders::ALL)
+        .border_style(STYLE_FOCUSED_BORDER);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![Line::from(vec![
+        Span::styled("Repo URL: ", STYLE_SELECTED),
+        Span::raw(app.input.to_string()),
+    ])];
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn draw_sync_error(frame: &mut Frame<'_>, message: &str) {
+    let area = centered_rect(60, 30, frame.size());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title("Sync Error")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![];
+    for line in message.lines() {
+        lines.push(Line::from(Span::raw(line.to_string())));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Press Esc or Enter to dismiss",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
 }

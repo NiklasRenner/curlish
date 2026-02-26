@@ -7,8 +7,9 @@
 - Language: Rust (edition 2024)
 - A TUI tool between curl and Postman for customizing, saving and executing HTTP requests.
 - Key crates: `ratatui`, `crossterm`, `reqwest` (blocking), `serde`/`serde_json`, `anyhow`.
-- Entry point: `src/main.rs`; modules: `app`, `ui`, `model`, `http`, `storage`.
+- Entry point: `src/main.rs`; modules: `app`, `ui`, `model`, `http`, `storage`, `headers`, `sync`.
 - Requests are persisted as JSON in `.curlish.json`.
+- Optional git-based sync configured via `.curlish-sync.toml`.
 
 ## Code Style
 - Prefer `.into()` over `.to_string()` for simple conversions.
