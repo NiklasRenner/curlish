@@ -1,0 +1,15 @@
+# Build
+/target/
+
+# IntelliJ / JetBrains
+.idea/
+*.iml
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# App data
+.curlish.json
+
