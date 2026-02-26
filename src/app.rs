@@ -99,7 +99,7 @@ impl App {
         })
     }
 
-    // â”€â”€ Key dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ Key dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<AppAction> {
         match &self.mode.clone() {
@@ -185,7 +185,7 @@ impl App {
         Ok(AppAction::Continue)
     }
 
-    // â”€â”€ Inline text edit (Name, URL) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ Inline text edit (Name, URL) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn handle_inline_edit(&mut self, field: EditField, key: KeyEvent) -> Result<AppAction> {
         match key.code {
@@ -329,60 +329,20 @@ impl App {
                 self.mode = Mode::HeaderList { selected: index };
             }
             KeyCode::Enter => {
-                // If an autocomplete suggestion is highlighted, accept it first
                 if let Some(ai) = autocomplete_idx {
-                    let suggestions = self.current_suggestions(editing_value, index);
-                    if let Some(s) = suggestions.get(ai) {
-                        self.input = s.to_string();
-                    }
-                    self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: None };
+                    self.accept_header_suggestion(ai, index, editing_value);
                 } else {
-                    // Save and advance
-                    let input_val = self.input.trim().to_string();
-                    if let Some(req) = self.current_request_mut() {
-                        if index < req.headers.len() {
-                            if !editing_value {
-                                req.headers[index].name = input_val;
-                                let next_val = req.headers[index].value.clone();
-                                self.input = next_val;
-                                self.mode = Mode::HeaderEdit { index, editing_value: true, autocomplete_idx: None };
-                            } else {
-                                req.headers[index].value = input_val;
-                                self.input.clear();
-                                self.mode = Mode::HeaderList { selected: index };
-                            }
-                        }
-                    }
+                    self.save_header_field(index, editing_value);
                 }
             }
             KeyCode::Tab => {
-                // Accept highlighted suggestion if any, otherwise advance field
                 let suggestions = self.current_suggestions(editing_value, index);
                 if let Some(ai) = autocomplete_idx {
-                    if let Some(s) = suggestions.get(ai) {
-                        self.input = s.to_string();
-                    }
-                    self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: None };
+                    self.accept_header_suggestion(ai, index, editing_value);
                 } else if !suggestions.is_empty() {
-                    // Start cycling
                     self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: Some(0) };
                 } else {
-                    // No suggestions, advance to next part
-                    let input_val = self.input.trim().to_string();
-                    if let Some(req) = self.current_request_mut() {
-                        if index < req.headers.len() {
-                            if !editing_value {
-                                req.headers[index].name = input_val;
-                                let next_val = req.headers[index].value.clone();
-                                self.input = next_val;
-                                self.mode = Mode::HeaderEdit { index, editing_value: true, autocomplete_idx: None };
-                            } else {
-                                req.headers[index].value = input_val;
-                                self.input.clear();
-                                self.mode = Mode::HeaderList { selected: index };
-                            }
-                        }
-                    }
+                    self.save_header_field(index, editing_value);
                 }
             }
             KeyCode::Up => {
@@ -407,7 +367,6 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.input.pop();
-                // Reset autocomplete selection on input change
                 self.mode = Mode::HeaderEdit { index, editing_value, autocomplete_idx: None };
             }
             KeyCode::Char(ch) => {
@@ -417,6 +376,31 @@ impl App {
             _ => {}
         }
         Ok(AppAction::Continue)
+    }
+
+    fn accept_header_suggestion(&mut self, suggestion_idx: usize, header_idx: usize, editing_value: bool) {
+        let suggestions = self.current_suggestions(editing_value, header_idx);
+        if let Some(s) = suggestions.get(suggestion_idx) {
+            self.input = s.to_string();
+        }
+        self.mode = Mode::HeaderEdit { index: header_idx, editing_value, autocomplete_idx: None };
+    }
+
+    fn save_header_field(&mut self, index: usize, editing_value: bool) {
+        let input_val = self.input.trim().to_string();
+        if let Some(req) = self.current_request_mut() {
+            if index < req.headers.len() {
+                if !editing_value {
+                    req.headers[index].name = input_val;
+                    self.input = req.headers[index].value.clone();
+                    self.mode = Mode::HeaderEdit { index, editing_value: true, autocomplete_idx: None };
+                } else {
+                    req.headers[index].value = input_val;
+                    self.input.clear();
+                    self.mode = Mode::HeaderList { selected: index };
+                }
+            }
+        }
     }
 
     pub fn current_suggestions(&self, editing_value: bool, index: usize) -> Vec<&str> {
@@ -522,58 +506,53 @@ impl App {
         Ok(AppAction::Continue)
     }
 
-    // â”€â”€ Confirm delete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Confirm popups ─────────────────────────────────────────────
 
     fn handle_confirm_delete(&mut self, key: KeyEvent) -> Result<AppAction> {
         let Mode::ConfirmDelete { ref mut selected } = self.mode else {
             return Ok(AppAction::Continue);
         };
-        match key.code {
-            KeyCode::Up | KeyCode::Down => {
-                *selected = if *selected == 0 { 1 } else { 0 };
-            }
-            KeyCode::Enter => {
-                if *selected == 0 {
-                    self.delete_request();
-                } else {
-                    self.status_line = String::from("Delete cancelled");
-                }
+        match Self::handle_yes_no(key, selected) {
+            Some(true) => {
+                self.delete_request();
                 self.mode = Mode::Normal;
             }
-            KeyCode::Esc => {
-                self.mode = Mode::Normal;
+            Some(false) => {
                 self.status_line = String::from("Delete cancelled");
+                self.mode = Mode::Normal;
             }
-            _ => {}
+            None => {}
         }
         Ok(AppAction::Continue)
     }
-
-    // â”€â”€ Confirm quit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn handle_confirm_quit(&mut self, key: KeyEvent) -> Result<AppAction> {
         let Mode::ConfirmQuit { ref mut selected } = self.mode else {
             return Ok(AppAction::Continue);
         };
-        match key.code {
-            KeyCode::Up | KeyCode::Down => {
-                *selected = if *selected == 0 { 1 } else { 0 };
-            }
-            KeyCode::Enter => {
-                if *selected == 0 {
-                    return Ok(AppAction::Quit);
-                }
-                self.mode = Mode::Normal;
-            }
-            KeyCode::Esc => {
-                self.mode = Mode::Normal;
-            }
-            _ => {}
+        match Self::handle_yes_no(key, selected) {
+            Some(true) => return Ok(AppAction::Quit),
+            Some(false) => self.mode = Mode::Normal,
+            None => {}
         }
         Ok(AppAction::Continue)
     }
 
-    // â”€â”€ Environment editing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    /// Shared two-option popup logic. Returns Some(true) for confirm,
+    /// Some(false) for cancel/esc, None if no decision yet.
+    fn handle_yes_no(key: KeyEvent, selected: &mut usize) -> Option<bool> {
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                *selected = 1 - *selected;
+                None
+            }
+            KeyCode::Enter => Some(*selected == 0),
+            KeyCode::Esc => Some(false),
+            _ => None,
+        }
+    }
+
+    // ── Environment editing
 
     fn handle_env_editor(&mut self, key: KeyEvent) -> Result<AppAction> {
         let active_idx = match self.store.active_environment {
@@ -787,7 +766,7 @@ impl App {
         self.status_line = "Request duplicated".into();
     }
 
-    // â”€â”€ Editing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // â”€â”€ Editing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn start_edit(&mut self) {
         let Some(req) = self.current_request() else { return };

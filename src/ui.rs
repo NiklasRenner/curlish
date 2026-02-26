@@ -199,10 +199,7 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::BodyEditor { .. } => {
             String::from("BODY | type freely  Ctrl+P: prettify JSON  Esc/Ctrl+S: save & exit")
         }
-        Mode::ConfirmDelete { .. } => {
-            String::from("\u{2191}\u{2193}: select  Enter: confirm  Esc: cancel")
-        }
-        Mode::ConfirmQuit { .. } => {
+        Mode::ConfirmDelete { .. } | Mode::ConfirmQuit { .. } => {
             String::from("\u{2191}\u{2193}: select  Enter: confirm  Esc: cancel")
         }
         Mode::EnvEditor { .. } => {
@@ -415,34 +412,18 @@ fn draw_body_editor(frame: &mut Frame<'_>, lines: &[String], cursor_row: usize, 
 }
 
 fn draw_confirm_delete(frame: &mut Frame<'_>, app: &App, selected: usize) {
-    let area = centered_rect(30, 20, frame.size());
-    frame.render_widget(Clear, area);
-
     let name = app.current_request().map_or("?", |r| r.name.as_str());
-    let options = ["Yes", "No"];
-    let items: Vec<ListItem> = options
-        .iter()
-        .enumerate()
-        .map(|(i, label)| {
-            let style = if i == selected { STYLE_SELECTED } else { Style::default() };
-            ListItem::new(format!("  {label}")).style(style)
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .title(format!("Delete \"{name}\"?"))
-            .borders(Borders::ALL)
-            .border_style(STYLE_FOCUSED_BORDER),
-    );
-    frame.render_widget(list, area);
+    draw_confirm_popup(frame, &format!("Delete \"{name}\"?"), &["Yes", "No"], selected);
 }
 
 fn draw_confirm_quit(frame: &mut Frame<'_>, selected: usize) {
+    draw_confirm_popup(frame, "Unsaved changes!", &["Quit", "Cancel"], selected);
+}
+
+fn draw_confirm_popup(frame: &mut Frame<'_>, title: &str, options: &[&str], selected: usize) {
     let area = centered_rect(30, 20, frame.size());
     frame.render_widget(Clear, area);
 
-    let options = ["Quit", "Cancel"];
     let items: Vec<ListItem> = options
         .iter()
         .enumerate()
@@ -454,7 +435,7 @@ fn draw_confirm_quit(frame: &mut Frame<'_>, selected: usize) {
 
     let list = List::new(items).block(
         Block::default()
-            .title("Unsaved changes!")
+            .title(title.to_string())
             .borders(Borders::ALL)
             .border_style(STYLE_FOCUSED_BORDER),
     );
