@@ -270,6 +270,7 @@ pub fn init(cfg: &SyncConfig, storage_path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn pull(cfg: &SyncConfig, storage_path: &Path) -> Result<SyncStatus> {
     let dir = match ensure_repo(cfg) {
         Ok(d) => d,
@@ -290,6 +291,18 @@ pub fn push(cfg: &SyncConfig, storage_path: &Path) -> Result<SyncStatus> {
         Ok(d) => d,
         Err(_) => return Ok(SyncStatus::Disabled),
     };
+
+    // Detect divergence: if the repo already has a version of the file
+    // that differs from local, treat it as a conflict rather than
+    // silently overwriting the remote.
+    let repo_file = dir.join(storage_path.file_name().unwrap_or_default());
+    if repo_file.exists() && storage_path.exists() {
+        let local = fs::read(storage_path).unwrap_or_default();
+        let remote = fs::read(&repo_file).unwrap_or_default();
+        if local != remote {
+            return Ok(SyncStatus::Conflict);
+        }
+    }
 
     copy_to_repo(&dir, storage_path);
 

@@ -91,11 +91,6 @@ impl App {
         let storage_path = storage::default_path();
         let sync_config = sync::load_config();
 
-        // Try to pull latest before loading
-        if let Some(ref cfg) = sync_config {
-            let _ = sync::pull(cfg, &storage_path);
-        }
-
         let store = storage::load_or_default(&storage_path)?;
         let next_id = store.requests.iter().map(|r| r.id).max().unwrap_or(0) + 1;
 
@@ -863,27 +858,7 @@ impl App {
 
     fn save_store(&mut self) -> Result<()> {
         storage::save(&self.storage_path, &self.store)?;
-
-        // Auto-push after save if sync is configured
-        if let Some(ref cfg) = self.sync_config {
-            match sync::push(cfg, &self.storage_path) {
-                Ok(SyncStatus::Ok) => {
-                    self.status_line = format!("Saved & synced to {}", self.storage_path.display());
-                }
-                Ok(SyncStatus::Conflict) => {
-                    self.status_line = "Saved locally, sync conflict detected".into();
-                    self.mode = Mode::SyncConflict { selected: 2 }; // default to Cancel
-                }
-                Ok(SyncStatus::Disabled) => {
-                    self.show_sync_error("Sync unavailable (no git repo initialized)");
-                }
-                Err(e) => {
-                    self.show_sync_error(&format!("Push failed: {e}"));
-                }
-            }
-        } else {
-            self.status_line = format!("Saved to {}", self.storage_path.display());
-        }
+        self.status_line = format!("Saved to {}", self.storage_path.display());
         Ok(())
     }
 
@@ -897,13 +872,12 @@ impl App {
 
         self.status_line = "Syncing...".into();
 
-        // First save current state
+        // Save current state before syncing
         if let Err(e) = storage::save(&self.storage_path, &self.store) {
-            self.show_sync_error(&format!("Save failed: {e}"));
+            self.show_sync_error(&format!("Save failed before sync: {e}"));
             return;
         }
 
-        // Push
         match sync::push(&cfg, &self.storage_path) {
             Ok(SyncStatus::Ok) => {
                 self.status_line = "Synced successfully".into();
@@ -949,7 +923,7 @@ impl App {
                                     match storage::load_or_default(&self.storage_path) {
                                         Ok(store) => {
                                             self.store = store;
-                                            self.selected = 0;
+                                            self.selected = self.selected.min(self.store.requests.len().saturating_sub(1));
                                             self.next_id = self.store.requests.iter().map(|r| r.id).max().unwrap_or(0) + 1;
                                             self.status_line = "Loaded remote version".into();
                                         }
