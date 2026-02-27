@@ -440,7 +440,7 @@ impl App {
         }
     }
 
-    // â”€â”€ Body editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Body editor
 
     fn handle_body_editor(&mut self, key: KeyEvent) -> Result<AppAction> {
         let Mode::BodyEditor { ref mut lines, ref mut cursor_row, ref mut cursor_col } = self.mode else {
@@ -727,7 +727,7 @@ impl App {
         }
     }
 
-    // â”€â”€ Navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Navigation
 
     fn move_selection(&mut self, delta: isize) {
         let len = self.store.requests.len();
@@ -758,7 +758,7 @@ impl App {
         }
     }
 
-    // â”€â”€ Request CRUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Request CRUD
 
     fn add_request(&mut self) {
         self.store.requests.push(Request::new(self.next_id));
@@ -789,7 +789,7 @@ impl App {
         self.status_line = "Request duplicated".into();
     }
 
-    // â”€â”€ Editing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Editing
 
     fn start_edit(&mut self) {
         let Some(req) = self.current_request() else { return };
@@ -839,7 +839,7 @@ impl App {
         Ok(())
     }
 
-    // â”€â”€ HTTP execution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // HTTP execution
 
     fn execute_request(&mut self) -> Result<()> {
         let req = self.current_request().context("No request selected")?;
@@ -859,7 +859,7 @@ impl App {
         Ok(())
     }
 
-    // â”€â”€ Persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Persistence
 
     fn save_store(&mut self) -> Result<()> {
         storage::save(&self.storage_path, &self.store)?;
