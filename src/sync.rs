@@ -7,6 +7,85 @@ use std::process::Command;
 const SYNC_CONFIG_FILE: &str = ".curlish-sync.toml";
 const SYNC_REPO_DIR: &str = ".curlish-repo";
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncConfig {
+    pub repo_url: String,
+    #[serde(default = "default_branch")]
+    pub branch: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncStatus {
+    Disabled,
+    Ok,
+    Conflict,
+}
+
+fn default_branch() -> String {
+    String::from("main")
+}
+
+pub fn config_path() -> PathBuf {
+    PathBuf::from(SYNC_CONFIG_FILE)
+}
+
+pub fn load_config() -> Option<SyncConfig> {
+    crate::config::load(&config_path())
+}
+
+pub fn save_config(config: &SyncConfig) -> Result<()> {
+    crate::config::save(&config_path(), config)
+}
+
+/// Set `HOME` and `GIT_SSH_COMMAND` so child git/ssh processes can locate
+/// SSH keys on Windows.  Call once, early, on the main thread.
+pub fn setup_git_ssh_env() {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+
+    if home.is_empty() {
+        return;
+    }
+
+    // SAFETY: called once, single-threaded, before any other work.
+    unsafe { std::env::set_var("HOME", &home); }
+
+    if std::env::var("GIT_SSH_COMMAND").is_ok() || std::env::var("GIT_SSH").is_ok() {
+        return;
+    }
+
+    if let Some(key) = find_ssh_key(&PathBuf::from(&home).join(".ssh")) {
+        let path = key.to_string_lossy().replace('\\', "/");
+        unsafe {
+            std::env::set_var(
+                "GIT_SSH_COMMAND",
+                format!("ssh -i \"{path}\" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"),
+            );
+        }
+    }
+}
+
+/// Return the first private-key file found in `dir`, preferring modern key types.
+fn find_ssh_key(dir: &Path) -> Option<PathBuf> {
+    for name in ["id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"] {
+        let key = dir.join(name);
+        if key.is_file() {
+            return Some(key);
+        }
+    }
+    // Fallback: any `id_*` file that isn't a .pub
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let n = p.file_name()?.to_string_lossy().to_string();
+        if n.starts_with("id_") && !n.ends_with(".pub") && p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 fn git_cmd() -> Command {
     let mut cmd = Command::new("git");
     if let Ok(home) = std::env::var("HOME") {
@@ -17,27 +96,6 @@ fn git_cmd() -> Command {
     cmd
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncConfig {
-    pub repo_url: String,
-    #[serde(default = "default_branch")]
-    pub branch: String,
-}
-
-fn default_branch() -> String {
-    String::from("main")
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SyncStatus {
-    Disabled,
-    Ok,
-    Conflict,
-}
-
-pub fn config_path() -> PathBuf {
-    PathBuf::from(SYNC_CONFIG_FILE)
-}
 
 fn repo_dir() -> PathBuf {
     std::env::current_dir()
@@ -45,17 +103,6 @@ fn repo_dir() -> PathBuf {
         .join(SYNC_REPO_DIR)
 }
 
-pub fn load_config() -> Option<SyncConfig> {
-    let path = config_path();
-    let contents = fs::read_to_string(&path).ok()?;
-    toml::from_str(&contents).ok()
-}
-
-pub fn save_config(config: &SyncConfig) -> Result<()> {
-    let contents = toml::to_string_pretty(config)?;
-    fs::write(config_path(), contents).context("Failed to write sync config")?;
-    Ok(())
-}
 
 pub fn is_git_available() -> bool {
     git_cmd()
