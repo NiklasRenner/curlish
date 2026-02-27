@@ -15,5 +15,4 @@ reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
 crossterm = "0.27"
 ratatui = "0.26"
 
-git-sync-rs = "0.7.0"
 

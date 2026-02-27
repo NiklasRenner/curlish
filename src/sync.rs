@@ -1,5 +1,4 @@
 use anyhow::{bail, Context, Result};
-use git_sync_rs::{RepositorySynchronizer, SyncConfig as GitSyncConfig, SyncError};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -66,16 +65,77 @@ pub fn is_git_available() -> bool {
         .unwrap_or(false)
 }
 
-fn make_sync_config(cfg: &SyncConfig) -> GitSyncConfig {
-    GitSyncConfig {
-        sync_new_files: true,
-        skip_hooks: true,
-        commit_message: Some("curlish sync".to_string()),
-        remote_name: "origin".to_string(),
-        branch_name: cfg.branch.clone(),
-        conflict_branch: false,
-        target_branch: None,
+// ── Git helper functions ────────────────────────────────────────────
+
+fn has_local_changes(dir: &Path) -> Result<bool> {
+    let output = git_cmd()
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output()
+        .context("Failed to run git status")?;
+    Ok(!output.stdout.is_empty())
+}
+
+fn auto_commit(dir: &Path) -> Result<()> {
+    let _ = git_cmd().args(["add", "."]).current_dir(dir).output();
+    let _ = git_cmd()
+        .args(["commit", "-m", "curlish sync"])
+        .current_dir(dir)
+        .output();
+    Ok(())
+}
+
+/// Full bidirectional sync: commit local changes, fetch, rebase, push.
+/// Returns Ok(true) on success, Ok(false) on conflict needing manual intervention.
+fn git_sync(dir: &Path, cfg: &SyncConfig) -> Result<Option<SyncStatus>> {
+    // Stage & commit any local changes
+    if has_local_changes(dir)? {
+        auto_commit(dir)?;
     }
+
+    // Fetch remote
+    let fetch = git_cmd()
+        .args(["fetch", "origin", &cfg.branch])
+        .current_dir(dir)
+        .output()
+        .context("Failed to run git fetch")?;
+
+    if !fetch.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch.stderr);
+        // Remote branch doesn't exist yet — not an error
+        if stderr.contains("couldn't find remote ref") {
+            return Ok(None); // signal: no remote branch yet
+        }
+        bail!("Fetch failed: {}", stderr.trim());
+    }
+
+    // Rebase onto remote
+    let remote_ref = format!("origin/{}", cfg.branch);
+    let rebase = git_cmd()
+        .args(["rebase", &remote_ref])
+        .current_dir(dir)
+        .output()
+        .context("Failed to run git rebase")?;
+
+    if !rebase.status.success() {
+        // Abort the failed rebase
+        let _ = git_cmd().args(["rebase", "--abort"]).current_dir(dir).output();
+        return Ok(Some(SyncStatus::Conflict));
+    }
+
+    // Push
+    let push = git_cmd()
+        .args(["push", "origin", &cfg.branch])
+        .current_dir(dir)
+        .output()
+        .context("Failed to run git push")?;
+
+    if !push.status.success() {
+        let stderr = String::from_utf8_lossy(&push.stderr);
+        bail!("Push failed: {}", stderr.trim());
+    }
+
+    Ok(Some(SyncStatus::Ok))
 }
 
 // ── Repo bootstrap ──────────────────────────────────────────────────
@@ -169,21 +229,12 @@ pub fn pull(cfg: &SyncConfig, storage_path: &Path) -> Result<SyncStatus> {
         Err(_) => return Ok(SyncStatus::Disabled),
     };
 
-    let mut syncer = match RepositorySynchronizer::new(&dir, make_sync_config(cfg)) {
-        Ok(s) => s,
-        Err(_) => return Ok(SyncStatus::Disabled),
-    };
-
-    match syncer.sync(false) {
-        Ok(()) => {
+    match git_sync(&dir, cfg)? {
+        Some(SyncStatus::Ok) | None => {
             copy_from_repo(&dir, storage_path);
             Ok(SyncStatus::Ok)
         }
-        Err(SyncError::ManualInterventionRequired { .. }) => Ok(SyncStatus::Conflict),
-        Err(SyncError::RemoteBranchNotFound { .. })
-        | Err(SyncError::NoRemoteConfigured { .. })
-        | Err(SyncError::GitError(_)) => Ok(SyncStatus::Ok),
-        Err(e) => bail!("Pull failed: {e}"),
+        Some(status) => Ok(status),
     }
 }
 
@@ -195,21 +246,13 @@ pub fn push(cfg: &SyncConfig, storage_path: &Path) -> Result<SyncStatus> {
 
     copy_to_repo(&dir, storage_path);
 
-    let mut syncer = match RepositorySynchronizer::new(&dir, make_sync_config(cfg)) {
-        Ok(s) => s,
-        Err(_) => return Ok(SyncStatus::Disabled),
-    };
-
-    match syncer.sync(false) {
-        Ok(()) => Ok(SyncStatus::Ok),
-        Err(SyncError::ManualInterventionRequired { .. }) => Ok(SyncStatus::Conflict),
-        Err(SyncError::RemoteBranchNotFound { .. })
-        | Err(SyncError::NoRemoteConfigured { .. })
-        | Err(SyncError::GitError(_)) => {
+    match git_sync(&dir, cfg)? {
+        Some(status) => Ok(status),
+        None => {
+            // No remote branch yet — bootstrap
             bootstrap_push(&dir, cfg)?;
             Ok(SyncStatus::Ok)
         }
-        Err(e) => bail!("Push failed: {e}"),
     }
 }
 
@@ -234,9 +277,8 @@ pub fn force_push(cfg: &SyncConfig, storage_path: &Path) -> Result<()> {
     let dir = ensure_repo(cfg)?;
     copy_to_repo(&dir, storage_path);
 
-    let syncer = RepositorySynchronizer::new(&dir, make_sync_config(cfg))?;
-    if syncer.has_local_changes()? {
-        syncer.auto_commit()?;
+    if has_local_changes(&dir)? {
+        auto_commit(&dir)?;
     }
 
     let output = git_cmd()
