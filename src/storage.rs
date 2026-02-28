@@ -65,6 +65,7 @@ mod tests {
                         value: String::from("application/json"),
                     }],
                     body: String::from(r#"{"key": "value"}"#),
+                    query_params: Vec::new(),
                 },
             ],
             environments: Vec::new(),

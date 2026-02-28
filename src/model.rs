@@ -1,5 +1,6 @@
 ﻿use serde::{Deserialize, Serialize};
 use std::fmt;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiArea {
     Environment,
@@ -7,6 +8,7 @@ pub enum UiArea {
     Details,
     Response,
 }
+
 impl UiArea {
     /// Move right in the layout
     pub fn right(self) -> Self {
@@ -96,6 +98,7 @@ pub struct RequestStore {
     #[serde(default)]
     pub active_environment: Option<usize>,
 }
+
 impl Default for RequestStore {
     fn default() -> Self {
         Self {
@@ -105,6 +108,7 @@ impl Default for RequestStore {
         }
     }
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub id: u64,
@@ -113,7 +117,9 @@ pub struct Request {
     pub url: String,
     pub headers: Vec<HeaderEntry>,
     pub body: String,
+    pub query_params: Vec<QueryParam>,
 }
+
 impl Request {
     pub fn sample() -> Self {
         Self {
@@ -123,8 +129,10 @@ impl Request {
             url: String::from("https://httpbin.org/get"),
             headers: Vec::new(),
             body: String::new(),
+            query_params: Vec::new(),
         }
     }
+
     pub fn new(id: u64) -> Self {
         Self {
             id,
@@ -133,9 +141,11 @@ impl Request {
             url: String::new(),
             headers: Vec::new(),
             body: String::new(),
+            query_params: Vec::new(),
         }
     }
 }
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum HttpMethod {
     Get,
@@ -146,6 +156,7 @@ pub enum HttpMethod {
     Head,
     Options,
 }
+
 impl HttpMethod {
     pub const ALL: &'static [HttpMethod] = &[
         Self::Get, Self::Post, Self::Put, Self::Patch, Self::Delete, Self::Head, Self::Options,
@@ -166,6 +177,7 @@ impl HttpMethod {
             Self::Options => "OPTIONS",
         }
     }
+
     #[cfg(test)]
     pub fn parse(input: &str) -> Option<Self> {
         match input.trim().to_ascii_uppercase().as_str() {
@@ -180,22 +192,32 @@ impl HttpMethod {
         }
     }
 }
+
 impl fmt::Display for HttpMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeaderEntry {
     pub name: String,
     pub value: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryParam {
+    pub key: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ResponseSummary {
     pub status: String,
     pub headers: Vec<HeaderEntry>,
     pub body: String,
 }
+
 pub fn format_headers(headers: &[HeaderEntry]) -> String {
     if headers.is_empty() {
         return String::from("(none)");
@@ -205,6 +227,17 @@ pub fn format_headers(headers: &[HeaderEntry]) -> String {
         .map(|h| format!("{}: {}", h.name, h.value))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+pub fn format_query_params(params: &[QueryParam]) -> String {
+    if params.is_empty() {
+        return String::from("(none)");
+    }
+    params
+        .iter()
+        .map(|p| format!("{}={}", p.key, p.value))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 #[cfg(test)]
 pub fn parse_headers(input: &str) -> Vec<HeaderEntry> {

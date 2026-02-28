@@ -7,13 +7,14 @@ use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
-const FIELD_COUNT: usize = 5;
+const FIELD_COUNT: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditField {
     Name,
     Method,
     Url,
+    QueryParams,
     Headers,
     Body,
 }
@@ -37,6 +38,15 @@ pub enum Mode {
         index: usize,
         editing_value: bool, // false = name, true = value
         autocomplete_idx: Option<usize>, // currently highlighted suggestion
+    },
+    /// Query param list browser: Up/Down to select, n/x/e to add/delete/edit, Esc to leave
+    QueryParamList {
+        selected: usize,
+    },
+    /// Editing a single query param's key or value inline
+    QueryParamEdit {
+        index: usize,
+        editing_value: bool,
     },
     /// Multi-line body editor within the TUI
     BodyEditor {
@@ -119,6 +129,8 @@ impl App {
             Mode::MethodPicker { .. } => self.handle_method_picker(key),
             Mode::HeaderList { .. } => self.handle_header_list(key),
             Mode::HeaderEdit { .. } => self.handle_header_edit(key),
+            Mode::QueryParamList { .. } => self.handle_query_param_list(key),
+            Mode::QueryParamEdit { .. } => self.handle_query_param_edit(key),
             Mode::BodyEditor { .. } => self.handle_body_editor(key),
             Mode::ConfirmDelete { .. } => self.handle_confirm_delete(key),
             Mode::ConfirmQuit { .. } => self.handle_confirm_quit(key),
@@ -435,6 +447,100 @@ impl App {
         }
     }
 
+    // Query param list
+
+    fn handle_query_param_list(&mut self, key: KeyEvent) -> Result<AppAction> {
+        let param_count = self.current_request().map_or(0, |r| r.query_params.len());
+        let Mode::QueryParamList { ref mut selected } = self.mode else {
+            return Ok(AppAction::Continue);
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Up => {
+                if param_count > 0 {
+                    *selected = if *selected == 0 { param_count - 1 } else { *selected - 1 };
+                }
+            }
+            KeyCode::Down => {
+                if param_count > 0 {
+                    *selected = (*selected + 1) % param_count;
+                }
+            }
+            KeyCode::Char('n') => {
+                if let Some(req) = self.current_request_mut() {
+                    req.query_params.push(crate::model::QueryParam {
+                        key: String::new(),
+                        value: String::new(),
+                    });
+                    let idx = req.query_params.len() - 1;
+                    self.input = String::new();
+                    self.mode = Mode::QueryParamEdit { index: idx, editing_value: false };
+                }
+            }
+            KeyCode::Char('x') => {
+                let sel = *selected;
+                if let Some(req) = self.current_request_mut() {
+                    if sel < req.query_params.len() {
+                        req.query_params.remove(sel);
+                    }
+                }
+                let new_count = self.current_request().map_or(0, |r| r.query_params.len());
+                if let Mode::QueryParamList { ref mut selected } = self.mode {
+                    if *selected >= new_count && new_count > 0 {
+                        *selected = new_count - 1;
+                    }
+                }
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                let sel = *selected;
+                if sel < param_count {
+                    if let Some(req) = self.current_request() {
+                        self.input = req.query_params[sel].key.clone();
+                    }
+                    self.mode = Mode::QueryParamEdit { index: sel, editing_value: false };
+                }
+            }
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
+    fn handle_query_param_edit(&mut self, key: KeyEvent) -> Result<AppAction> {
+        let Mode::QueryParamEdit { index, editing_value } = self.mode else {
+            return Ok(AppAction::Continue);
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.input.clear();
+                self.mode = Mode::QueryParamList { selected: index };
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                let input_val = self.input.trim().to_string();
+                if let Some(req) = self.current_request_mut() {
+                    if index < req.query_params.len() {
+                        if !editing_value {
+                            req.query_params[index].key = input_val;
+                            self.input = req.query_params[index].value.clone();
+                            self.mode = Mode::QueryParamEdit { index, editing_value: true };
+                        } else {
+                            req.query_params[index].value = input_val;
+                            self.input.clear();
+                            self.mode = Mode::QueryParamList { selected: index };
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => { self.input.pop(); }
+            KeyCode::Char(ch) => self.input.push(ch),
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
     // Body editor
 
     fn handle_body_editor(&mut self, key: KeyEvent) -> Result<AppAction> {
@@ -748,7 +854,8 @@ impl App {
             0 => EditField::Name,
             1 => EditField::Method,
             2 => EditField::Url,
-            3 => EditField::Headers,
+            3 => EditField::QueryParams,
+            4 => EditField::Headers,
             _ => EditField::Body,
         }
     }
@@ -806,6 +913,9 @@ impl App {
             }
             EditField::Headers => {
                 self.mode = Mode::HeaderList { selected: 0 };
+            }
+            EditField::QueryParams => {
+                self.mode = Mode::QueryParamList { selected: 0 };
             }
             EditField::Body => {
                 let body = req.body.clone();
@@ -1105,6 +1215,7 @@ mod tests {
             EditField::Name,
             EditField::Method,
             EditField::Url,
+            EditField::QueryParams,
             EditField::Headers,
             EditField::Body,
         ];

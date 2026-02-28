@@ -13,11 +13,28 @@ pub fn execute_request(req: &Request, env_vars: &[EnvVariable]) -> Result<Respon
 
     let url = resolve_placeholders(&req.url, env_vars);
     let body = resolve_placeholders(&req.body, env_vars);
+
+    // Append query params to URL
+    let url = if req.query_params.is_empty() {
+        url
+    } else {
+        let params: Vec<String> = req
+            .query_params
+            .iter()
+            .map(|p| {
+                let k = resolve_placeholders(&p.key, env_vars);
+                let v = resolve_placeholders(&p.value, env_vars);
+                format!("{}={}", urlencoding(&k), urlencoding(&v))
+            })
+            .collect();
+        let sep = if url.contains('?') { "&" } else { "?" };
+        format!("{url}{sep}{}", params.join("&"))
+    };
     let headers: Vec<HeaderEntry> = req
         .headers
         .iter()
         .map(|h| HeaderEntry {
-            name: h.name.clone(),
+            name: resolve_placeholders(&h.name, env_vars),
             value: resolve_placeholders(&h.value, env_vars),
         })
         .collect();
@@ -80,5 +97,21 @@ fn truncate(mut body: String) -> String {
     body.truncate(MAX_BODY_CHARS);
     body.push_str("\n...<truncated>");
     body
+}
+
+/// Minimal percent-encoding for query param keys and values.
+fn urlencoding(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    out
 }
 

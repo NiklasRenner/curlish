@@ -1,5 +1,5 @@
 use crate::app::{App, EditField, Mode};
-use crate::model::{format_headers, UiArea};
+use crate::model::{format_headers, format_query_params, UiArea};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -52,6 +52,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         }
         Mode::HeaderEdit { index, editing_value, autocomplete_idx } => {
             draw_header_edit(frame, app, *index, *editing_value, *autocomplete_idx);
+        }
+        Mode::QueryParamList { selected } => {
+            draw_query_param_list(frame, app, *selected);
+        }
+        Mode::QueryParamEdit { index, editing_value } => {
+            draw_query_param_edit(frame, app, *index, *editing_value);
         }
         Mode::BodyEditor { lines, cursor_row, cursor_col } => {
             draw_body_editor(frame, lines, *cursor_row, *cursor_col);
@@ -134,6 +140,7 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let current = app.current_field();
         let name_display = if req.name.is_empty() { "(unnamed)" } else { &req.name };
         let url_display = if req.url.is_empty() { "(no url)" } else { &req.url };
+        let query_display = format_query_params(&req.query_params);
         let headers_display = format_headers(&req.headers);
         let body_display = if req.body.is_empty() { "(empty)" } else { &req.body };
 
@@ -141,6 +148,7 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
             field_line("Name", name_display, current == EditField::Name),
             field_line("Method", &req.method.to_string(), current == EditField::Method),
             field_line("URL", url_display, current == EditField::Url),
+            field_line("Params", &query_display, current == EditField::QueryParams),
             field_line("Headers", &headers_display, current == EditField::Headers),
             field_line("Body", body_display, current == EditField::Body),
         ]
@@ -204,6 +212,13 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Mode::HeaderEdit { editing_value, .. } => {
             let part = if *editing_value { "value" } else { "name" };
             format!("HEADER {part}: {} | Tab/\u{2191}\u{2193}: autocomplete  Enter: confirm  Esc: cancel", app.input)
+        }
+        Mode::QueryParamList { .. } => {
+            String::from("PARAMS | \u{2191}\u{2193}: select  N: add  X: delete  E/Enter: edit  Esc: done")
+        }
+        Mode::QueryParamEdit { editing_value, .. } => {
+            let part = if *editing_value { "value" } else { "key" };
+            format!("PARAM {part}: {} | Tab/Enter: next  Esc: cancel", app.input)
         }
         Mode::BodyEditor { .. } => {
             String::from("BODY | type freely  Ctrl+P: prettify JSON  Esc/Ctrl+S: save & exit")
@@ -379,6 +394,73 @@ fn draw_header_edit(frame: &mut Frame<'_>, app: &App, index: usize, editing_valu
             lines.push(Line::from(Span::styled(format!("  {s}"), style)));
         }
     }
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn draw_query_param_list(frame: &mut Frame<'_>, app: &App, selected: usize) {
+    let area = centered_rect(60, 50, frame.size());
+    frame.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = app
+        .current_request()
+        .map(|req| {
+            req.query_params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let style = if i == selected { STYLE_SELECTED } else { Style::default() };
+                    let key = if p.key.is_empty() { "(key)" } else { &p.key };
+                    let val = if p.value.is_empty() { "(value)" } else { &p.value };
+                    ListItem::new(format!("  {key} = {val}")).style(style)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let count = items.len();
+    let list = List::new(items).block(
+        Block::default()
+            .title(format!("Query Params ({count}) | N:add X:del E:edit"))
+            .borders(Borders::ALL)
+            .border_style(STYLE_FOCUSED_BORDER),
+    );
+    frame.render_widget(list, area);
+}
+
+fn draw_query_param_edit(frame: &mut Frame<'_>, app: &App, index: usize, editing_value: bool) {
+    let area = centered_rect(60, 20, frame.size());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!("Edit Param #{}", index + 1))
+        .borders(Borders::ALL)
+        .border_style(STYLE_FOCUSED_BORDER);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let (key, value) = app
+        .current_request()
+        .and_then(|r| r.query_params.get(index))
+        .map(|p| (p.key.as_str(), p.value.as_str()))
+        .unwrap_or(("", ""));
+
+    let key_style = if !editing_value { STYLE_SELECTED } else { Style::default() };
+    let val_style = if editing_value { STYLE_SELECTED } else { Style::default() };
+
+    let display_key = if !editing_value { &app.input } else { key };
+    let display_value = if editing_value { &app.input } else { value };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Key:   ", key_style),
+            Span::raw(display_key.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Value: ", val_style),
+            Span::raw(display_value.to_string()),
+        ]),
+    ];
 
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
