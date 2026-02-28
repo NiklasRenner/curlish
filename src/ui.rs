@@ -133,18 +133,42 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // When in inline editing mode, show the input buffer with a cursor indicator
+    let editing_field = match &app.mode {
+        Mode::Editing(f) => Some(*f),
+        _ => None,
+    };
+
     let lines = if let Some(req) = app.current_request() {
         let current = app.current_field();
-        let name_display = if req.name.is_empty() { "(unnamed)" } else { &req.name };
-        let url_display = if req.url.is_empty() { "(no url)" } else { &req.url };
+
+        let name_display: String;
+        let url_display: String;
+
+        if editing_field == Some(EditField::Name) {
+            name_display = format!("{}▏", app.input);
+        } else if req.name.is_empty() {
+            name_display = "(unnamed)".to_string();
+        } else {
+            name_display = req.name.clone();
+        }
+
+        if editing_field == Some(EditField::Url) {
+            url_display = format!("{}▏", app.input);
+        } else if req.url.is_empty() {
+            url_display = "(no url)".to_string();
+        } else {
+            url_display = req.url.clone();
+        }
+
         let query_display = format_query_params(&req.query_params);
         let headers_display = format_headers(&req.headers);
         let body_display = if req.body.is_empty() { "(empty)" } else { &req.body };
 
         vec![
-            field_line("Name", name_display, current == EditField::Name),
+            field_line("Name", &name_display, current == EditField::Name || editing_field == Some(EditField::Name)),
             field_line("Method", &req.method.to_string(), current == EditField::Method),
-            field_line("URL", url_display, current == EditField::Url),
+            field_line("URL", &url_display, current == EditField::Url || editing_field == Some(EditField::Url)),
             field_line("Params", &query_display, current == EditField::QueryParams),
             field_line("Headers", &headers_display, current == EditField::Headers),
             field_line("Body", body_display, current == EditField::Body),
@@ -203,20 +227,20 @@ fn draw_keymap(frame: &mut Frame<'_>) {
         ("E / Enter",     "Edit selected field"),
         ("R",             "Run request"),
         ("Ctrl+S",        "Save to disk"),
-        ("N",             "New request"),
+        ("N",             "New request / env"),
         ("C",             "Copy request"),
-        ("X",             "Delete request"),
+        ("X",             "Delete request / env"),
         ("G",             "Sync"),
-        ("Shift+G",       "Sync setup"),
+        ("Ctrl+G",        "Sync setup"),
         ("K",             "Show keybinds"),
-        ("Q / Esc",       "Quit"),
+        ("Q",             "Quit"),
     ];
 
     let items: Vec<ListItem> = bindings
         .iter()
         .map(|(key, desc)| {
             ListItem::new(Line::from(vec![
-                Span::styled(format!(" {key:<16}"), STYLE_SELECTED),
+                Span::styled(format!("{key:<16}"), STYLE_SELECTED),
                 Span::raw(desc.to_string()),
             ]))
         })

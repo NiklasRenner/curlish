@@ -149,13 +149,31 @@ impl App {
         }
     }
 
+    pub fn shift_keycode_lowercase(key: KeyEvent) -> KeyCode {
+            match key.code {
+                KeyCode::Char(ch) if ch.is_ascii_uppercase() => KeyCode::Char(ch.to_ascii_lowercase()),
+                other => other
+            }
+    }
+
     fn handle_normal(&mut self, key: KeyEvent) -> Result<AppAction> {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-            self.save_store()?;
-            return Ok(AppAction::Continue);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        // Ctrl+<key> bindings
+        if ctrl {
+            return match Self::shift_keycode_lowercase(key) {
+                KeyCode::Char('s') => { self.save_store()?; Ok(AppAction::Continue) }
+                KeyCode::Char('g') => {
+                    self.input = self.sync_config.as_ref().map_or(String::new(), |c| c.repo_url.clone());
+                    self.mode = Mode::SyncSetup;
+                    Ok(AppAction::Continue)
+                }
+                _ => Ok(AppAction::Continue),
+            };
         }
 
-        match key.code {
+        // Plain keys (no modifiers)
+        match Self::shift_keycode_lowercase(key) {
             KeyCode::Char('q') => {
                 if storage::has_unsaved_changes(&self.storage_path, &self.store) {
                     self.mode = Mode::ConfirmQuit { selected: 1 };
@@ -199,7 +217,7 @@ impl App {
                     self.mode = Mode::ConfirmDelete { selected: 1 };
                 }
             }
-            KeyCode::Char('e') => {
+            KeyCode::Char('e') | KeyCode::Enter => {
                 if self.focused_area == UiArea::Details {
                     self.start_edit();
                 } else if self.focused_area == UiArea::Environment {
@@ -209,13 +227,8 @@ impl App {
                 }
             }
             KeyCode::Char('r') => self.execute_request()?,
-            KeyCode::Char('S') => self.save_store()?,
             KeyCode::Char('c') => self.duplicate_request(),
             KeyCode::Char('g') => self.prepare_sync(),
-            KeyCode::Char('G') => {
-                self.input = self.sync_config.as_ref().map_or(String::new(), |c| c.repo_url.clone());
-                self.mode = Mode::SyncSetup;
-            }
             KeyCode::Char('k') => {
                 self.mode = Mode::Keymap;
             }
@@ -985,7 +998,7 @@ impl App {
 
     fn prepare_sync(&mut self) {
         let Some(ref _cfg) = self.sync_config else {
-            self.status_line = "No sync configured (Shift+G to set up)".into();
+            self.status_line = "No sync configured (Ctrl+G to set up)".into();
             return;
         };
 
