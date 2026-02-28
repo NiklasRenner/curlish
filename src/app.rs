@@ -71,8 +71,12 @@ pub enum Mode {
     SyncConflict { selected: usize },
     /// Setup sync: enter repo URL
     SyncSetup,
+    /// Sync in progress — drawn once to show "Syncing...", then processed next tick
+    SyncPending,
     /// Sync error popup: show full error, dismiss with Esc/Enter
     SyncError { message: String },
+    /// Keymap popup: show keybinds, dismiss with Esc
+    Keymap,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,7 +114,7 @@ impl App {
             field_index: 0,
             mode: Mode::Normal,
             input: String::new(),
-            status_line: String::new(),
+            status_line: String::from("K for keymap"),
             response: None,
             storage_path,
             focused_area: UiArea::RequestList,
@@ -139,7 +143,9 @@ impl App {
             Mode::EnvNameEdit => self.handle_env_name_edit(key),
             Mode::SyncConflict { .. } => self.handle_sync_conflict(key),
             Mode::SyncSetup => self.handle_sync_setup(key),
+            Mode::SyncPending => Ok(AppAction::Continue),
             Mode::SyncError { .. } => self.handle_sync_error(key),
+            Mode::Keymap => self.handle_keymap(key),
         }
     }
 
@@ -205,10 +211,13 @@ impl App {
             KeyCode::Char('r') => self.execute_request()?,
             KeyCode::Char('S') => self.save_store()?,
             KeyCode::Char('c') => self.duplicate_request(),
-            KeyCode::Char('g') => self.trigger_sync(),
+            KeyCode::Char('g') => self.prepare_sync(),
             KeyCode::Char('G') => {
                 self.input = self.sync_config.as_ref().map_or(String::new(), |c| c.repo_url.clone());
                 self.mode = Mode::SyncSetup;
+            }
+            KeyCode::Char('k') => {
+                self.mode = Mode::Keymap;
             }
             _ => {}
         }
@@ -974,19 +983,34 @@ impl App {
 
     // -- Sync --
 
-    fn trigger_sync(&mut self) {
-        let Some(ref cfg) = self.sync_config.clone() else {
+    fn prepare_sync(&mut self) {
+        let Some(ref _cfg) = self.sync_config else {
             self.status_line = "No sync configured (Shift+G to set up)".into();
             return;
         };
-
-        self.status_line = "Syncing...".into();
 
         // Save current state before syncing
         if let Err(e) = storage::save(&self.storage_path, &self.store) {
             self.show_sync_error(&format!("Save failed before sync: {e}"));
             return;
         }
+
+        self.status_line = "Syncing...".into();
+        self.mode = Mode::SyncPending;
+    }
+
+    /// Called from the main loop after a frame has been drawn with "Syncing...".
+    pub fn fake_async(&mut self){
+        self.do_sync()
+    }
+
+    fn do_sync(&mut self) {
+        let Some(ref cfg) = self.sync_config.clone() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+
+        self.mode = Mode::Normal;
 
         match sync::push(&cfg, &self.storage_path) {
             Ok(SyncStatus::Ok) => {
@@ -1114,6 +1138,16 @@ impl App {
     fn handle_sync_error(&mut self, key: KeyEvent) -> Result<AppAction> {
         match key.code {
             KeyCode::Esc | KeyCode::Enter => {
+                self.mode = Mode::Normal;
+            }
+            _ => {}
+        }
+        Ok(AppAction::Continue)
+    }
+
+    fn handle_keymap(&mut self, key: KeyEvent) -> Result<AppAction> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('k') | KeyCode::Enter => {
                 self.mode = Mode::Normal;
             }
             _ => {}

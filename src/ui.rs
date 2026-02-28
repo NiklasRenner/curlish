@@ -7,25 +7,16 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragr
 use ratatui::Frame;
 
 const STYLE_SELECTED: Style = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
-const STYLE_STATUS: Style = Style::new().fg(Color::Green);
+const STYLE_STATUS: Style = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
 const STYLE_RESPONSE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 const STYLE_BORDER: Style = Style::new().fg(Color::Green);
 const STYLE_FOCUSED_BORDER: Style = Style::new().fg(Color::Magenta);
-const KEY_HELP: &str = "WASD: areas  \u{2191}\u{2193}: nav  E: edit  R: run  Ctrl+S: save  N: new  C: copy  X: del  G: sync  Q: quit";
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
-    let outer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(frame.size());
-
-    let main_area = outer[0];
-    let status_area = outer[1];
-
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(main_area);
+        .split(frame.size());
 
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -87,10 +78,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         Mode::SyncError { message } => {
             draw_sync_error(frame, message);
         }
+        Mode::Keymap => {
+            draw_keymap(frame);
+        }
         _ => {}
     }
-
-    draw_status(frame, app, status_area);
 }
 
 fn area_block(title: &str, focused: bool) -> Block<'_> {
@@ -165,7 +157,8 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn draw_response(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let focused = app.focused_area == UiArea::Response;
-    let block = area_block("Response", focused);
+    let block = area_block("Response", focused)
+        .title_bottom(Line::from(format!(" {} ", app.status_line)).right_aligned().style(STYLE_STATUS));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -196,62 +189,42 @@ fn draw_response(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let text = match &app.mode {
-        Mode::Normal => format!("{KEY_HELP} | {}", app.status_line),
-        Mode::Editing(field) => {
-            let value = if app.input.is_empty() { "(type and Enter)" } else { &app.input };
-            format!("EDIT {field:?}: {value}")
-        }
-        Mode::MethodPicker { filter, .. } => {
-            let hint = if filter.is_empty() { "" } else { filter.as_str() };
-            format!("METHOD | type to filter: {hint} | \u{2191}\u{2193}: select  Enter: confirm  Esc: cancel")
-        }
-        Mode::HeaderList { .. } => {
-            String::from("HEADERS | \u{2191}\u{2193}: select  N: add  X: delete  E/Enter: edit  Esc: done")
-        }
-        Mode::HeaderEdit { editing_value, .. } => {
-            let part = if *editing_value { "value" } else { "name" };
-            format!("HEADER {part}: {} | Tab/\u{2191}\u{2193}: autocomplete  Enter: confirm  Esc: cancel", app.input)
-        }
-        Mode::QueryParamList { .. } => {
-            String::from("PARAMS | \u{2191}\u{2193}: select  N: add  X: delete  E/Enter: edit  Esc: done")
-        }
-        Mode::QueryParamEdit { editing_value, .. } => {
-            let part = if *editing_value { "value" } else { "key" };
-            format!("PARAM {part}: {} | Tab/Enter: next  Esc: cancel", app.input)
-        }
-        Mode::BodyEditor { .. } => {
-            String::from("BODY | type freely  Ctrl+P: prettify JSON  Esc/Ctrl+S: save & exit")
-        }
-        Mode::ConfirmDelete { .. } | Mode::ConfirmQuit { .. } => {
-            String::from("\u{2191}\u{2193}: select  Enter: confirm  Esc: cancel")
-        }
-        Mode::EnvEditor { .. } => {
-            String::from("ENV | \u{2191}\u{2193}: select  N: add var  X: del  E/Enter: edit  R: rename  Esc: done")
-        }
-        Mode::EnvVarEdit { editing_value, .. } => {
-            let part = if *editing_value { "value" } else { "key" };
-            format!("ENV VAR {part}: {} | Tab/Enter: next  Esc: cancel", app.input)
-        }
-        Mode::EnvNameEdit => {
-            format!("ENV NAME: {} | Enter: confirm  Esc: cancel", app.input)
-        }
-        Mode::SyncConflict { .. } => {
-            String::from("SYNC CONFLICT | \u{2191}\u{2193}: select  Enter: confirm  Esc: cancel")
-        }
-        Mode::SyncSetup => {
-            format!("SYNC REPO URL: {} | Enter: confirm  Esc: cancel  (empty to disable)", app.input)
-        }
-        Mode::SyncError { .. } => {
-            String::from("Esc/Enter: dismiss")
-        }
-    };
+fn draw_keymap(frame: &mut Frame<'_>) {
+    let area = centered_rect(50, 60, frame.size());
+    frame.render_widget(Clear, area);
 
-    frame.render_widget(
-        Paragraph::new(format!(" {text}")).style(STYLE_STATUS),
-        area,
+    let bindings = [
+        ("W / A / S / D", "Navigate areas"),
+        ("↑ / ↓",         "Navigate items"),
+        ("E / Enter",     "Edit selected field"),
+        ("R",             "Run request"),
+        ("Ctrl+S",        "Save to disk"),
+        ("N",             "New request"),
+        ("C",             "Copy request"),
+        ("X",             "Delete request"),
+        ("G",             "Sync"),
+        ("Shift+G",       "Sync setup"),
+        ("K",             "Show keybinds"),
+        ("Q / Esc",       "Quit"),
+    ];
+
+    let items: Vec<ListItem> = bindings
+        .iter()
+        .map(|(key, desc)| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("  {key:<16}"), STYLE_SELECTED),
+                Span::raw(desc.to_string()),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title("Keybinds | Esc: close")
+            .borders(Borders::ALL)
+            .border_style(STYLE_FOCUSED_BORDER),
     );
+    frame.render_widget(list, area);
 }
 
 fn field_line(label: &str, value: &str, selected: bool) -> Line<'static> {

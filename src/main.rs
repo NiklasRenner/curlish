@@ -47,6 +47,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
     loop {
         terminal.draw(|frame| ui::draw(frame, &app))?;
 
+        // Process deferred blocking work after drawing so the
+        // status message ("Syncing...") is visible on screen.
+        if matches!(app.mode, app::Mode::SyncPending) {
+            app.fake_async();
+            continue; // redraw immediately with the result
+        }
+
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
