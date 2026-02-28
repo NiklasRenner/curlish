@@ -3,11 +3,11 @@ use crate::model::{format_headers, format_query_params, UiArea};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 const STYLE_SELECTED: Style = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
-const STYLE_STATUS: Style = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
+const STYLE_TITLE: Style = Style::new().fg(Color::White);
 const STYLE_RESPONSE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 const STYLE_BORDER: Style = Style::new().fg(Color::Green);
 const STYLE_FOCUSED_BORDER: Style = Style::new().fg(Color::Magenta);
@@ -86,7 +86,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn area_block(title: &str, focused: bool) -> Block<'_> {
-    let block = Block::default().title(title).borders(Borders::ALL);
+    let block = Block::default()
+        .title(title)
+        .title_style(STYLE_TITLE)
+        .borders(Borders::ALL)
+        .padding(Padding::new(1, 1, 0, 0));
     if focused {
         block.border_type(BorderType::Thick).border_style(STYLE_FOCUSED_BORDER)
     } else {
@@ -102,7 +106,7 @@ fn draw_environment(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let style = if focused { STYLE_SELECTED } else { Style::default() };
-    let text = Line::from(Span::styled(format!(" {env_name}"), style));
+    let text = Line::from(Span::styled(format!("{env_name}"), style));
     frame.render_widget(Paragraph::new(text), inner);
 }
 
@@ -115,7 +119,7 @@ fn draw_request_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, req)| {
             let style = if i == app.selected { STYLE_SELECTED } else { Style::default() };
-            ListItem::new(format!(" {}", req.name)).style(style)
+            ListItem::new(format!("{}", req.name)).style(style)
         })
         .collect();
 
@@ -158,7 +162,7 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn draw_response(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let focused = app.focused_area == UiArea::Response;
     let block = area_block("Response", focused)
-        .title_bottom(Line::from(format!(" {} ", app.status_line)).right_aligned().style(STYLE_STATUS));
+        .title_bottom(Line::from(format!(" {} ", app.status_line)).right_aligned());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -212,7 +216,7 @@ fn draw_keymap(frame: &mut Frame<'_>) {
         .iter()
         .map(|(key, desc)| {
             ListItem::new(Line::from(vec![
-                Span::styled(format!("  {key:<16}"), STYLE_SELECTED),
+                Span::styled(format!(" {key:<16}"), STYLE_SELECTED),
                 Span::raw(desc.to_string()),
             ]))
         })
@@ -221,6 +225,7 @@ fn draw_keymap(frame: &mut Frame<'_>) {
     let list = List::new(items).block(
         Block::default()
             .title("Keybinds | Esc: close")
+            .title_style(STYLE_TITLE)
             .borders(Borders::ALL)
             .border_style(STYLE_FOCUSED_BORDER),
     );
@@ -280,6 +285,7 @@ fn draw_method_picker(frame: &mut Frame<'_>, filter: &str, selected: usize) {
     let list = List::new(items).block(
         Block::default()
             .title(title)
+            .padding(Padding::new(1, 1, 0, 0))
             .borders(Borders::ALL)
             .border_style(STYLE_FOCUSED_BORDER),
     );
@@ -445,6 +451,7 @@ fn draw_body_editor(frame: &mut Frame<'_>, lines: &[String], cursor_row: usize, 
 
     let block = Block::default()
         .title("Body Editor | Esc/Ctrl+S: save & exit")
+        .padding(Padding::new(1, 1, 0, 0))
         .borders(Borders::ALL)
         .border_style(STYLE_FOCUSED_BORDER);
     let inner = block.inner(area);
