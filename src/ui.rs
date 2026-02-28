@@ -6,10 +6,11 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-const STYLE_SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-const STYLE_STATUS: Style = Style::new().fg(Color::Yellow);
+const STYLE_SELECTED: Style = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
+const STYLE_STATUS: Style = Style::new().fg(Color::Green);
 const STYLE_RESPONSE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
-const STYLE_FOCUSED_BORDER: Style = Style::new().fg(Color::Cyan);
+const STYLE_BORDER: Style = Style::new().fg(Color::Green);
+const STYLE_FOCUSED_BORDER: Style = Style::new().fg(Color::Magenta);
 const KEY_HELP: &str = "WASD: areas  \u{2191}\u{2193}: nav  E: edit  R: run  Ctrl+S: save  N: new  C: copy  X: del  G: sync  Q: quit";
 
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
@@ -97,7 +98,7 @@ fn area_block(title: &str, focused: bool) -> Block<'_> {
     if focused {
         block.border_type(BorderType::Thick).border_style(STYLE_FOCUSED_BORDER)
     } else {
-        block
+        block.border_style(STYLE_BORDER)
     }
 }
 
