@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const SYNC_CONFIG_FILE: &str = ".curlish-sync.toml";
-pub const SYNC_REPO_DIR: &str = ".curlish-repo";
+const SYNC_REPO_DIR: &str = ".curlish-repo";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncConfig {
@@ -33,6 +33,14 @@ fn default_local_dir() -> String {
 
 pub fn config_path() -> PathBuf {
     PathBuf::from(SYNC_CONFIG_FILE)
+}
+
+pub fn create_config(repo_url: &str) -> SyncConfig {
+    SyncConfig {
+        repo_url: repo_url.to_string(),
+        branch: default_branch(),
+        local_dir: default_local_dir(),
+    }
 }
 
 pub fn load_config() -> Option<SyncConfig> {

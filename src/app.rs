@@ -2,7 +2,7 @@
 use crate::http;
 use crate::model::{EnvVariable, Environment, HeaderEntry, HttpMethod, Request, RequestStore, ResponseSummary, UiArea};
 use crate::storage;
-use crate::sync::{self, SyncConfig, SyncStatus, SYNC_REPO_DIR};
+use crate::sync::{self, SyncConfig, SyncStatus};
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
@@ -1108,11 +1108,7 @@ impl App {
                     let _ = std::fs::remove_file(sync::config_path());
                     self.status_line = "Sync disabled".into();
                 } else {
-                    let cfg = SyncConfig {
-                        repo_url: url,
-                        branch: String::from("main"),
-                        local_dir: String::from(SYNC_REPO_DIR),
-                    };
+                    let cfg = sync::create_config(&url);
                     match sync::save_config(&cfg) {
                         Ok(()) => {
                             if !sync::is_git_available() {
