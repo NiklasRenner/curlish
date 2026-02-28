@@ -132,8 +132,9 @@ fn auto_commit(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Full bidirectional sync: commit local changes, fetch, rebase, push.
-/// Returns Ok(true) on success, Ok(false) on conflict needing manual intervention.
+/// Commit local changes, fetch, rebase onto remote, push.
+/// Returns `None` when the remote branch doesn't exist yet,
+/// `Some(Ok)` on success, `Some(Conflict)` when rebase fails.
 fn git_sync(dir: &Path, cfg: &SyncConfig) -> Result<Option<SyncStatus>> {
     // Stage & commit any local changes
     if has_local_changes(dir)? {
@@ -270,38 +271,56 @@ pub fn init(cfg: &SyncConfig, storage_path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn pull(cfg: &SyncConfig, storage_path: &Path) -> Result<SyncStatus> {
-    let dir = match ensure_repo(cfg) {
-        Ok(d) => d,
-        Err(_) => return Ok(SyncStatus::Disabled),
-    };
-
-    match git_sync(&dir, cfg)? {
-        Some(SyncStatus::Ok) | None => {
-            copy_from_repo(&dir, storage_path);
-            Ok(SyncStatus::Ok)
-        }
-        Some(status) => Ok(status),
-    }
-}
-
 pub fn push(cfg: &SyncConfig, storage_path: &Path) -> Result<SyncStatus> {
+    // Remember whether a local repo already existed before ensure_repo.
+    let repo_existed = repo_dir().join(".git").exists();
+
     let dir = match ensure_repo(cfg) {
         Ok(d) => d,
         Err(_) => return Ok(SyncStatus::Disabled),
     };
 
-    // Detect divergence: if the repo already has a version of the file
-    // that differs from local, treat it as a conflict rather than
-    // silently overwriting the remote.
-    let repo_file = dir.join(storage_path.file_name().unwrap_or_default());
-    if repo_file.exists() && storage_path.exists() {
-        let local = fs::read(storage_path).unwrap_or_default();
-        let remote = fs::read(&repo_file).unwrap_or_default();
-        if local != remote {
+    // Fetch the remote branch (may legitimately fail if branch doesn't exist yet).
+    let fetch = git_cmd()
+        .args(["fetch", "origin", &cfg.branch])
+        .current_dir(&dir)
+        .output()
+        .context("Failed to run git fetch")?;
+
+    let remote_ref = format!("origin/{}", cfg.branch);
+    let remote_has_branch = fetch.status.success();
+
+    if !repo_existed && remote_has_branch && rev_count(&dir, &remote_ref) > 0 {
+        // Fresh local repo and the remote already has commits — we
+        // can't know if they're compatible, so ask the user.
+        return Ok(SyncStatus::Conflict);
+    }
+
+    if repo_existed && remote_has_branch {
+        let local_ahead = rev_count(&dir, &format!("{remote_ref}..HEAD"));
+        let remote_ahead = rev_count(&dir, &format!("HEAD..{remote_ref}"));
+
+        if local_ahead > 0 && remote_ahead > 0 {
+            // Truly diverged — both sides have unique commits.
             return Ok(SyncStatus::Conflict);
         }
+
+        if remote_ahead > 0 && local_ahead == 0 {
+            // Remote is strictly ahead — auto-pull.
+            let reset = git_cmd()
+                .args(["reset", "--hard", &remote_ref])
+                .current_dir(&dir)
+                .output()
+                .context("Failed to reset to remote")?;
+            if !reset.status.success() {
+                bail!("Reset failed: {}", String::from_utf8_lossy(&reset.stderr).trim());
+            }
+            copy_from_repo(&dir, storage_path);
+            return Ok(SyncStatus::Ok);
+        }
+
+        // local_ahead > 0 && remote_ahead == 0  → local is strictly ahead, fall through to push.
+        // both 0 → already in sync, fall through (will be a no-op push).
     }
 
     copy_to_repo(&dir, storage_path);
@@ -314,6 +333,19 @@ pub fn push(cfg: &SyncConfig, storage_path: &Path) -> Result<SyncStatus> {
             Ok(SyncStatus::Ok)
         }
     }
+}
+
+/// Count commits reachable via a rev-list range expression.
+/// e.g. "origin/main" (total), "HEAD..origin/main" (remote ahead),
+///      "origin/main..HEAD" (local ahead).
+fn rev_count(dir: &Path, range: &str) -> usize {
+    git_cmd()
+        .args(["rev-list", "--count", range])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(0)
 }
 
 fn bootstrap_push(dir: &Path, cfg: &SyncConfig) -> Result<()> {

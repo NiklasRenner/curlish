@@ -880,7 +880,16 @@ impl App {
 
         match sync::push(&cfg, &self.storage_path) {
             Ok(SyncStatus::Ok) => {
-                self.status_line = "Synced successfully".into();
+                // Reload from disk — sync may have pulled remote changes.
+                match storage::load_or_default(&self.storage_path) {
+                    Ok(store) => {
+                        self.store = store;
+                        self.selected = self.selected.min(self.store.requests.len().saturating_sub(1));
+                        self.next_id = self.store.requests.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+                        self.status_line = "Synced successfully".into();
+                    }
+                    Err(e) => self.show_sync_error(&format!("Sync succeeded but reload failed: {e}")),
+                }
             }
             Ok(SyncStatus::Conflict) => {
                 self.status_line = "Sync conflict".into();
