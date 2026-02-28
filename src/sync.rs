@@ -5,13 +5,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const SYNC_CONFIG_FILE: &str = ".curlish-sync.toml";
-const SYNC_REPO_DIR: &str = ".curlish-repo";
+pub const SYNC_REPO_DIR: &str = ".curlish-repo";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncConfig {
     pub repo_url: String,
     #[serde(default = "default_branch")]
     pub branch: String,
+    #[serde(default = "default_local_dir")]
+    pub local_dir: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +25,10 @@ pub enum SyncStatus {
 
 fn default_branch() -> String {
     String::from("main")
+}
+
+fn default_local_dir() -> String {
+    String::from(SYNC_REPO_DIR)
 }
 
 pub fn config_path() -> PathBuf {
@@ -96,12 +102,6 @@ fn git_cmd() -> Command {
     cmd
 }
 
-
-fn repo_dir() -> PathBuf {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(SYNC_REPO_DIR)
-}
 
 
 pub fn is_git_available() -> bool {
@@ -189,7 +189,7 @@ fn git_sync(dir: &Path, cfg: &SyncConfig) -> Result<Option<SyncStatus>> {
 // ── Repo bootstrap ──────────────────────────────────────────────────
 
 fn ensure_repo(cfg: &SyncConfig) -> Result<PathBuf> {
-    let dir = repo_dir();
+    let dir = PathBuf::from(&cfg.local_dir);
 
     if !dir.join(".git").exists() {
         let dir_str = dir.to_str().unwrap_or(SYNC_REPO_DIR);
@@ -262,7 +262,7 @@ fn copy_to_repo(repo_dir: &Path, storage_path: &Path) {
 // ── Public sync operations ──────────────────────────────────────────
 
 pub fn init(cfg: &SyncConfig, storage_path: &Path) -> Result<()> {
-    let dir = repo_dir();
+    let dir = PathBuf::from(&cfg.local_dir);
     if dir.exists() && !dir.join(".git").exists() {
         let _ = fs::remove_dir_all(&dir);
     }
@@ -273,7 +273,7 @@ pub fn init(cfg: &SyncConfig, storage_path: &Path) -> Result<()> {
 
 pub fn push(cfg: &SyncConfig, storage_path: &Path) -> Result<SyncStatus> {
     // Remember whether a local repo already existed before ensure_repo.
-    let repo_existed = repo_dir().join(".git").exists();
+    let repo_existed = PathBuf::from(&cfg.local_dir).join(".git").exists();
 
     let dir = match ensure_repo(cfg) {
         Ok(d) => d,
